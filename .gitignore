@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+*.env.local
+
+# Model weights (large binary files — store on HuggingFace or GDrive)
+models/vision/*.pth
+models/audio/wav2vec2_ravdess/
+models/text/roberta_goemotions/
+models/fusion/*.pth
+
+# Data (download via script)
+data/raw/
+data/processed/
+
+# Jupyter / IDE
+.ipynb_checkpoints/
+*.ipynb
+.idea/
+.vscode/
+*.DS_Store
+
+# Streamlit cache
+.streamlit/
+
+# Logs
+*.log
+logs/
+
+# Redis dump
+dump.rdb
