@@ -1,9 +1,11 @@
 # 🧠 TriFusion: Trimodal Emotional Intelligence System
 A production-ready real-time emotional analysis system using Vision, Audio, and Text fusion.
 
-![Python](https://img.shields.io/badge/Python-3.14+-6366f1?style=for-the-badge&logo=python)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.56+-ff4b4b?style=for-the-badge&logo=streamlit)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.2+-ee4c2c?style=for-the-badge&logo=pytorch)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)]()
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.2-orange)]()
+[![HuggingFace](https://img.shields.io/badge/HuggingFace-Transformers-yellow)]()
+[![LangGraph](https://img.shields.io/badge/LangGraph-Agentic_AI-purple)]()
+[![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-red)]()
 
 ---
 
