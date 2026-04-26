@@ -1,0 +1,58 @@
+models:
+  vision:
+    backbone: "efficientnet_b0"
+    num_classes: 7
+    input_size: 224
+    checkpoint: "models/vision/efficientnet_fer2013.pth"
+  audio:
+    backbone: "facebook/wav2vec2-base"
+    num_classes: 8
+    sample_rate: 16000
+    chunk_duration: 3
+    checkpoint: "models/audio/wav2vec2_ravdess"
+  text:
+    backbone: "roberta-base"
+    num_classes: 8
+    max_length: 128
+    checkpoint: "models/text/roberta_goemotions"
+  fusion:
+    # Concatenated input: vision(7) + audio(8) + text(8) = 23 dims
+    input_dim: 23
+    hidden_dims: [64, 32]
+    output_dim: 8
+    checkpoint: "models/fusion/fusion_mlp.pth"
+
+thresholds:
+  incongruence_high: 0.7
+  incongruence_med: 0.3
+  confidence_min: 0.4
+  # How many consecutive high-incongruence frames trigger escalation
+  escalation_consecutive_frames: 3
+
+training:
+  vision:
+    epochs: 30
+    batch_size: 64
+    lr: 0.0001
+    weight_decay: 0.01
+  audio:
+    epochs: 20
+    batch_size: 16
+    lr: 0.00003
+    # Freeze base encoder for first N epochs, then unfreeze
+    freeze_base_epochs: 5
+  text:
+    epochs: 4
+    batch_size: 32
+    lr: 0.00002
+  fusion:
+    epochs: 50
+    batch_size: 128
+    lr: 0.001
+
+agent:
+  model: "llama-3.3-70b-versatile"
+  max_tokens: 512
+  temperature: 0.7
+  # Stop generating new interventions after this many in a session
+  max_intervention_count: 5
