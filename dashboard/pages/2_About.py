@@ -4,6 +4,8 @@ dashboard/pages/2_About.py
 About page — Architecture overview, team info, and tech stack.
 """
 
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import streamlit as st
 
 st.markdown("## 📖 About TriFusion")

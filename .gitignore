@@ -15,7 +15,7 @@ build/
 # Environment
 .env
 *.env.local
-
+.gemini/
 # Model weights (large binary files — store on HuggingFace or GDrive)
 models/vision/*.pth
 models/audio/wav2vec2_ravdess/
