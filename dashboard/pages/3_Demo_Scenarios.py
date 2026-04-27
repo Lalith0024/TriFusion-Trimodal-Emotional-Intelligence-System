@@ -6,7 +6,7 @@ No camera or microphone required — great for evaluations and presentations.
 """
 
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import streamlit as st
 from dashboard.components.radar_chart import render_radar_chart
 from dashboard.components.incongruence_meter import render_incongruence_meter

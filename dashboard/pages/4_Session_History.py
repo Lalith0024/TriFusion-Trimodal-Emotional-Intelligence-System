@@ -6,7 +6,7 @@ Falls back to in-memory store if Redis is unavailable.
 """
 
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import streamlit as st
 from src.utils.redis_client import get_frames, clear_session
 from dashboard.components.emotion_timeline import render_emotion_timeline, render_incongruence_timeline
