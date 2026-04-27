@@ -89,8 +89,12 @@ class PipelineManager:
     def _run_loop(self):
         cap = cv2.VideoCapture(0)
         
-        # Use a blank frame if camera is not available
+        # Create a placeholder frame with a helpful message for cloud/no-camera environments
         blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        cv2.putText(blank_frame, "Hardware Not Found / Cloud Demo", (100, 220), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 150), 2)
+        cv2.putText(blank_frame, "Run locally for live webcam feed", (110, 260), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 80, 120), 1)
         
         try:
             while self.running:

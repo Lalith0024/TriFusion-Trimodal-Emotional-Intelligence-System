@@ -8,9 +8,14 @@ No camera or microphone required — great for evaluations and presentations.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import streamlit as st
+from dashboard.components.sidebar import render_sidebar
 from dashboard.components.radar_chart import render_radar_chart
 from dashboard.components.incongruence_meter import render_incongruence_meter
 from src.fusion.incongruence import compute_incongruence
+
+st.set_page_config(page_title="TriFusion | Demo", layout="wide")
+
+render_sidebar()
 
 st.markdown("## 🎭 Demo Scenarios")
 st.markdown("*Explore how TriFusion responds to different emotional patterns — no camera required.*")

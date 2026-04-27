@@ -7,6 +7,9 @@ About page — Architecture overview, team info, and tech stack.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import streamlit as st
+from dashboard.components.sidebar import render_sidebar
+
+render_sidebar()
 
 st.markdown("## 📖 About TriFusion")
 st.markdown("*The system that listens to what you don't say.*")

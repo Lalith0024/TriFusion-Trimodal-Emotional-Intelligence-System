@@ -8,6 +8,9 @@ and the fusion layer. Modelled after HuggingFace model card format.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import streamlit as st
+from dashboard.components.sidebar import render_sidebar
+
+render_sidebar()
 
 st.markdown("## 🤖 Model Cards")
 st.markdown("*Detailed technical documentation for each TriFusion component.*")

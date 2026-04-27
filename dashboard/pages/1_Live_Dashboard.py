@@ -13,6 +13,7 @@ from dashboard.components.radar_chart import render_radar_chart
 from dashboard.components.incongruence_meter import render_incongruence_meter
 from src.pipeline.manager import PipelineManager
 from config.emotions import UNIFIED_EMOTIONS
+from dashboard.components.sidebar import render_sidebar
 
 load_dotenv()
 
@@ -25,6 +26,21 @@ if "pipeline" not in st.session_state:
 
 st.markdown("## 🎥 Live Dashboard")
 st.markdown("*Real-time trimodal emotional analysis — Face · Voice · Words*")
+
+# ── Shared Sidebar ────────────────────────────────────────────────────────────
+render_sidebar()
+
+# ── Beta Warning ──────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="background:#451a03; border-left:4px solid #fbbf24; padding:0.6rem 1rem; border-radius:4px; margin-bottom:1.5rem;">
+    <div style="color:#fbbf24; font-size:0.85rem; font-weight:600;">⚠️ Beta Version Notice</div>
+    <div style="color:#fcd34d; font-size:0.75rem;">
+        Hardware capture is optimized for local environments. Please check 
+        <a href="https://github.com/Lalith0024/TriFusion-Trimodal-Emotional-Intelligence-System" style="color:#fbbf24; text-decoration:underline;">README</a> 
+        for full system requirements.
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 col_main, col_right = st.columns([3, 2], gap="large")
@@ -70,7 +86,7 @@ st.markdown("### 📈 Session Emotion Timeline")
 timeline_placeholder = st.empty()
 
 # ── FRAGMENT: Real-time update logic (Flicker-free) ──────────────────────────
-@st.fragment(run_every=0.05)
+@st.fragment(run_every=0.1)
 def sync_dashboard():
     if not st.session_state.session_running:
         # Idle state

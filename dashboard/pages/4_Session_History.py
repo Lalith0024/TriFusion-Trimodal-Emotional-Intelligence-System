@@ -8,8 +8,13 @@ Falls back to in-memory store if Redis is unavailable.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import streamlit as st
+from dashboard.components.sidebar import render_sidebar
 from src.utils.redis_client import get_frames, clear_session
 from dashboard.components.emotion_timeline import render_emotion_timeline, render_incongruence_timeline
+
+st.set_page_config(page_title="TriFusion | History", layout="wide")
+
+render_sidebar()
 
 st.markdown("## 📊 Session History")
 st.markdown("*Review past emotion sessions and incongruence patterns.*")
