@@ -1,208 +1,409 @@
 """
 src/pipeline/manager.py
 ────────────────────────
-Threaded pipeline manager to decouple hardware capture from the Streamlit UI.
-This solves the 'DuplicateElementId' and 'While-Loop' issues in Streamlit.
+Decoupled pipeline manager for high-FPS real-time operation.
+
+Architecture:
+  - CaptureThread : grabs frames at full camera speed (30+ FPS), zero ML work
+  - InferenceThread: consumes frames, runs all three models, writes results
+  - Streamlit reads from shared state — always has fresh frame + last results
+
+Root cause of the 10-20 FPS problem (now fixed):
+  Previously, VideoCapture.read() and EfficientNet inference ran sequentially
+  in the SAME thread.  Each iteration blocked for ~80ms (33ms capture + 50ms
+  model) → 12 FPS ceiling.
+
+  Decoupled solution:
+    Capture thread  runs at 30+ FPS  (zero ML, just cv2.VideoCapture.read)
+    Inference thread runs at ~12 FPS  (all ML work here)
+    UI always shows the LATEST raw frame from the capture queue → 30 FPS feel
 """
 
 import threading
+import queue
 import time
 import cv2
 import numpy as np
-import random
 from typing import Optional, Dict
+import logging
 
-# ==============================================================================
-# SIMULATION MODE
-# Set to True to run the UI smoothly at 100+ FPS without loading heavy ML models.
-# (Later, set to False to connect to the actual models).
-# ==============================================================================
+logger = logging.getLogger(__name__)
+
+# ── Toggle ─────────────────────────────────────────────────────────────────────
+# Keep True until all four model weights exist in models/ subdirs.
+# Set False ONLY after running all four training scripts successfully.
 SIMULATION_MODE = True
 
-if not SIMULATION_MODE:
-    from src.vision.inference import VisionInference
-    from src.audio.inference import AudioInference
-    from src.text.inference import TextInference
-    from src.fusion.inference import FusionInference
-    from src.agent.graph import wellness_agent
-    from src.agent.state import AgentState, EmotionFrame, ModalityResult
 
 class PipelineManager:
+    """
+    Manages two daemon threads and shared state buffers.
+    Instantiate once per Streamlit session via st.session_state.
+    """
+
     def __init__(self):
         self.running = False
-        self.thread = None
-        
-        # Latest results
-        self.latest_frame: Optional[np.ndarray] = None
-        self.latest_vision: Dict = {}
-        self.latest_audio: Dict = {}
-        self.latest_text: Dict = {}
-        self.latest_fusion: Dict = {}
-        self.latest_agent_response: str = "Initializing..."
-        
-        # Models (only load if not simulating)
+
+        self._frame_q   = queue.Queue(maxsize=1)   # BGR frames → inference
+        self._display_frame = None                 # RGB frame buffer for UI
+        self._display_lock  = threading.Lock()
+
+        # Thread-safe result store — written by inference, read by UI
+        self._result_lock = threading.Lock()
+        self._result: Dict = self._empty_result()
+
+        # FPS tracking (capture thread updates these atomically)
+        self._fps_lock    = threading.Lock()
+        self._fps         = 0.0
+        self._frame_count = 0
+
+        # Threads (initialised in start())
+        self._capture_thread   = None
+        self._inference_thread = None
+
+        # Load heavy ML models ONCE at construction time (not per frame)
         if not SIMULATION_MODE:
-            self.vision_inf = VisionInference()
-            self.audio_inf = AudioInference()
-            self.text_inf = TextInference()
-            self.fusion_inf = FusionInference()
-            self.agent_state = AgentState()
-        
-        self.lock = threading.Lock()
-        self.frame_count = 0
-        
-        # Simulation states
-        self.sim_emotions = ["happy", "sad", "angry", "fearful", "surprised", "disgusted", "calm", "neutral"]
-        self.current_v_probs = self._generate_mock_probs("neutral")
-        self.current_a_probs = self._generate_mock_probs("neutral")
-        self.current_t_probs = self._generate_mock_probs("neutral")
-        self.current_f_probs = self._generate_mock_probs("neutral")
-        self.target_dom = "neutral"
-        self.target_tick = 0
+            self._load_models()
+
+    # ── Model loading ────────────────────────────────────────────────────────
+
+    def _load_models(self):
+        """Load all four inference pipelines. Called once at startup."""
+        import os
+        from src.vision.inference  import VisionInference
+        from src.audio.inference   import AudioInference
+        from src.text.inference    import TextInference
+        from src.fusion.inference  import FusionInference
+
+        logger.info("Loading models — this may take 30-60 seconds on first run...")
+        self.vision_inf  = VisionInference(
+            os.getenv("VISION_MODEL_PATH",  "models/vision/efficientnet_fer2013.pth"))
+        self.audio_inf   = AudioInference(
+            os.getenv("AUDIO_MODEL_PATH",   "models/audio/wav2vec2_ravdess"))
+        self.text_inf    = TextInference(
+            os.getenv("TEXT_MODEL_PATH",    "models/text/roberta_goemotions"))
+        self.fusion_inf  = FusionInference(
+            os.getenv("FUSION_MODEL_PATH",  "models/fusion/fusion_mlp.pth"))
+        logger.info("All models loaded.")
+
+    # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def start(self):
         if self.running:
             return
         self.running = True
-        self.thread = threading.Thread(target=self._run_loop, daemon=True)
-        self.thread.start()
+        self._capture_thread = threading.Thread(
+            target=self._capture_loop, daemon=True, name="trifusion-capture")
+        self._inference_thread = threading.Thread(
+            target=self._inference_loop, daemon=True, name="trifusion-inference")
+        self._capture_thread.start()
+        self._inference_thread.start()
+        logger.info("Pipeline started (capture + inference threads).")
 
     def stop(self):
         self.running = False
-        if self.thread:
-            self.thread.join(timeout=1.0)
+        # Unblock any blocking .get() inside threads so they can exit cleanly
+        try:
+            self._frame_q.put_nowait(None)
+        except queue.Full:
+            pass
+        if self._capture_thread:
+            self._capture_thread.join(timeout=2)
+        if self._inference_thread:
+            self._inference_thread.join(timeout=2)
+        
+        with self._display_lock:
+            self._display_frame = None
+            
+        logger.info("Pipeline stopped.")
 
-    def _smooth_probs(self, current: dict, target_dom: str, momentum=0.95) -> dict:
-        target = self._generate_mock_probs(target_dom)
-        smoothed = {e: current[e] * momentum + target[e] * (1 - momentum) for e in self.sim_emotions}
-        total = sum(smoothed.values())
-        return {k: v / total for k, v in smoothed.items()}
+    # ── Capture thread ───────────────────────────────────────────────────────
 
-    def _generate_mock_probs(self, dominant_emotion: str) -> dict:
-        """Generate smooth fake probabilities for simulation."""
-        probs = {e: random.uniform(0.01, 0.1) for e in self.sim_emotions}
-        probs[dominant_emotion] = random.uniform(0.5, 0.9)
-        # Normalize
-        total = sum(probs.values())
-        return {k: v / total for k, v in probs.items()}
-
-    def _run_loop(self):
+    def _capture_loop(self):
+        """
+        Runs at full camera speed.  Zero ML work here.
+        CAP_PROP_BUFFERSIZE=1 prevents OpenCV from buffering stale frames.
+        """
         cap = cv2.VideoCapture(0)
-        
-        # Create a placeholder frame with a helpful message for cloud/no-camera environments
-        blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        cv2.putText(blank_frame, "Hardware Not Found / Cloud Demo", (100, 220), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 150), 2)
-        cv2.putText(blank_frame, "Run locally for live webcam feed", (110, 260), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 80, 120), 1)
-        
+
+        if not cap.isOpened():
+            logger.warning("No camera found — using blank placeholder frame.")
+            while self.running:
+                blank = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(blank, "No camera detected", (160, 240),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 120), 2)
+                cv2.putText(blank, "Check permissions / connection", (150, 280),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (60, 60, 100), 1)
+                rgb = cv2.cvtColor(blank, cv2.COLOR_BGR2RGB)
+                with self._display_lock:
+                    self._display_frame = rgb
+                self._put_latest(self._frame_q, blank)
+                time.sleep(0.1)
+            return
+
+        # Low-latency capture settings
+        cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS,          30)
+
+        fps_tick  = time.time()
+        fps_count = 0
+
         try:
             while self.running:
-                # 1. Capture Frame
-                ret = False
-                frame = blank_frame
-                if cap is not None and cap.isOpened():
-                    ret, raw_frame = cap.read()
-                    if ret:
-                        frame = cv2.flip(raw_frame, 1)
-                
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # 2. Run Inference or Simulation
-                if SIMULATION_MODE:
-                    # SMOOTH SIMULATION: Generate realistic, non-jittery data
-                    if self.frame_count >= self.target_tick:
-                        self.target_dom = random.choice(self.sim_emotions)
-                        self.target_tick = self.frame_count + random.randint(60, 200) # hold emotion for 1-3 seconds
-                    
-                    self.current_v_probs = self._smooth_probs(self.current_v_probs, self.target_dom, 0.98)
-                    self.current_a_probs = self._smooth_probs(self.current_a_probs, self.target_dom, 0.97)
-                    self.current_t_probs = self._smooth_probs(self.current_t_probs, self.target_dom, 0.99)
-                    self.current_f_probs = self._smooth_probs(self.current_f_probs, self.target_dom, 0.95)
-                    
-                    dom_v = max(self.current_v_probs, key=self.current_v_probs.get)
-                    dom_a = max(self.current_a_probs, key=self.current_a_probs.get)
-                    dom_t = max(self.current_t_probs, key=self.current_t_probs.get)
-                    dom_f = max(self.current_f_probs, key=self.current_f_probs.get)
-                    
-                    v_res = {"dominant": dom_v, "confidence": self.current_v_probs[dom_v], "probabilities": self.current_v_probs}
-                    a_res = {"dominant": dom_a, "confidence": self.current_a_probs[dom_a], "probabilities": self.current_a_probs}
-                    t_res = {"dominant": dom_t, "confidence": self.current_t_probs[dom_t], "probabilities": self.current_t_probs}
-                    
-                    # Compute a stable incongruence based on current probabilities
-                    # We'll just fake it smoothly
-                    inc_score = 0.1 if dom_v == dom_a == dom_t else 0.6
-                    
-                    f_res = {
-                        "dominant_emotion": dom_f, 
-                        "confidence": self.current_f_probs[dom_f],
-                        "incongruence_score": inc_score + random.uniform(-0.02, 0.02),
-                        "fused_probabilities": self.current_f_probs
-                    }
-                    
-                    if self.frame_count % 60 == 0:
-                        agent_resp = random.choice([
-                            "I'm noticing some changes in your expression. Take a deep breath.",
-                            "You seem calm right now. Keep it up!",
-                            "I'm here to listen if you want to talk about what's on your mind.",
-                            "Your signals show a bit of variation. Is everything okay?",
-                            "Let's take a moment to ground ourselves.",
-                            "You are doing great. Keep going."
-                        ])
-                    else:
-                        agent_resp = self.latest_agent_response
-                        
-                else:
-                    # REAL INFERENCE (Will be enabled later)
-                    v_res = self.vision_inf.predict(rgb_frame)
-                    a_res = {"dominant": "neutral", "confidence": 0.0, "probabilities": {e: 0.125 for e in self.sim_emotions}}
-                    t_res = {"dominant": "neutral", "confidence": 0.0, "probabilities": {e: 0.125 for e in self.sim_emotions}}
-                    
-                    f_res = self.fusion_inf.fuse(v_res, a_res, t_res)
-                    
-                    if self.frame_count % 30 == 0:
-                        current_frame = EmotionFrame(
-                            dominant_emotion=f_res["dominant_emotion"],
-                            confidence=f_res["confidence"],
-                            incongruence_score=f_res["incongruence_score"],
-                            vision=ModalityResult(**v_res),
-                            audio=ModalityResult(**a_res),
-                            text=ModalityResult(**t_res),
-                            user_text=""
-                        )
-                        self.agent_state.current_frame = current_frame
-                        try:
-                            self.agent_state = wellness_agent.invoke(self.agent_state)
-                            agent_resp = self.agent_state.agent_response
-                        except:
-                            agent_resp = "I'm here for you."
-                    else:
-                        agent_resp = self.latest_agent_response
+                ret, frame = cap.read()
+                if not ret or frame is None or frame.size == 0:
+                    time.sleep(0.01)
+                    continue
 
-                # 3. Thread-safe state update
-                with self.lock:
-                    self.latest_frame = rgb_frame
-                    self.latest_vision = v_res
-                    self.latest_audio = a_res
-                    self.latest_text = t_res
-                    self.latest_fusion = f_res
-                    self.latest_agent_response = agent_resp
-                    self.frame_count += 1
-                
-                # Sleep briefly to yield thread (aim for ~100 FPS)
-                time.sleep(0.01) 
+                frame = cv2.flip(frame, 1)   # mirror for natural interaction
+
+                # Push to inference queue (non-blocking)
+                self._put_latest(self._frame_q, frame.copy())
+
+                # Push RGB copy to display buffer (ensure contiguous for Streamlit)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb = np.ascontiguousarray(rgb)
+                with self._display_lock:
+                    self._display_frame = rgb
+
+                # FPS measurement (updated every second)
+                fps_count += 1
+                now = time.time()
+                if now - fps_tick >= 1.0:
+                    with self._fps_lock:
+                        self._fps = round(fps_count / (now - fps_tick), 1)
+                        self._frame_count += fps_count
+                    fps_count = 0
+                    fps_tick  = now
         finally:
-            if cap is not None:
-                cap.release()
+            cap.release()
+            logger.info("Camera released.")
 
-    def get_latest(self):
-        with self.lock:
-            return {
-                "frame": self.latest_frame,
-                "vision": self.latest_vision,
-                "audio": self.latest_audio,
-                "text": self.latest_text,
-                "fusion": self.latest_fusion,
-                "agent_response": self.latest_agent_response,
-                "frame_count": self.frame_count
+    # ── Inference thread ─────────────────────────────────────────────────────
+
+    def _inference_loop(self):
+        """
+        Consumes raw BGR frames from _frame_q.
+        Runs full trimodal inference and writes results to shared dict.
+        Runs at whatever speed the models allow (~10-15 FPS on CPU — fine).
+        UI always reads LATEST raw frame from _display_q for smoothness.
+        """
+        agent_state    = None
+        agent_response = "Session starting — I'll be right with you."
+        agent_ticker   = 0   # only call WellnessAgent every N frames (Groq API cost)
+
+        while self.running:
+            try:
+                frame = self._frame_q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            if frame is None:
+                break
+
+            try:
+                if SIMULATION_MODE:
+                    result = self._simulate()
+                else:
+                    # ── Real trimodal inference ──────────────────────────────
+                    # Vision: BGR frame → 7-class FER2013 probs
+                    v_res = self.vision_inf.predict(frame)
+
+                    # Audio: placeholder waveform until mic recorder is wired
+                    a_res = self.audio_inf.predict(
+                        np.zeros(16000, dtype=np.float32))
+
+                    # Text: placeholder until Whisper STT is wired
+                    t_res = self.text_inf.predict("")
+
+                    # Fusion: late-fusion MLP + KL incongruence scorer
+                    f_res = self.fusion_inf.fuse(v_res, a_res, t_res)
+
+                    # ── WellnessAgent (throttled — every 30 inference frames) ─
+                    # 30 frames × ~80ms/frame ≈ 2.4 sec between agent calls
+                    if agent_ticker % 30 == 0:
+                        try:
+                            from src.agent.graph import wellness_agent
+                            from src.agent.state import (
+                                AgentState, EmotionFrame, ModalityResult)
+
+                            if agent_state is None:
+                                agent_state = AgentState()
+
+                            ef = EmotionFrame(
+                                dominant_emotion   = f_res["dominant_emotion"],
+                                confidence         = f_res["confidence"],
+                                incongruence_score = f_res["incongruence_score"],
+                                vision = ModalityResult(
+                                    dominant      = v_res["dominant"],
+                                    confidence    = v_res["confidence"],
+                                    probabilities = v_res["probabilities"]),
+                                audio  = ModalityResult(
+                                    dominant      = a_res["dominant"],
+                                    confidence    = a_res["confidence"],
+                                    probabilities = a_res["probabilities"]),
+                                text   = ModalityResult(
+                                    dominant      = t_res["dominant"],
+                                    confidence    = t_res["confidence"],
+                                    probabilities = t_res["probabilities"]),
+                                user_text = ""
+                            )
+                            agent_state.current_frame = ef
+                            agent_state   = wellness_agent.invoke(agent_state)
+                            agent_response = agent_state.agent_response
+                        except Exception as e:
+                            logger.warning(f"WellnessAgent error: {e}")
+
+                    agent_ticker += 1
+                    result = {
+                        "vision":         v_res,
+                        "audio":          a_res,
+                        "text":           t_res,
+                        "fusion":         f_res,
+                        "agent_response": agent_response,
+                    }
+
+                # Thread-safe result write
+                with self._result_lock:
+                    self._result.update(result)
+
+            except Exception as e:
+                logger.error(f"Inference error: {e}", exc_info=True)
+
+    # ── Public API (Streamlit reads from here) ───────────────────────────────
+
+    def get_latest(self) -> dict:
+        """
+        Returns latest frame + inference results.
+        Non-blocking — safe to call from Streamlit's main thread at any rate.
+        """
+        # Get freshest frame from buffer
+        with self._display_lock:
+            frame = self._display_frame.copy() if self._display_frame is not None else None
+
+        with self._result_lock:
+            result = dict(self._result)
+
+        with self._fps_lock:
+            result["fps"]         = self._fps
+            result["frame_count"] = self._frame_count
+
+        result["frame"] = frame
+        return result
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _put_latest(q: queue.Queue, item):
+        """
+        Non-blocking put.  If the queue is full, evict the stale item first
+        so we always keep the LATEST data, never accumulate a backlog.
+        """
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(item)
+            except queue.Full:
+                pass
+
+    @staticmethod
+    def _empty_result() -> dict:
+        """Default result before inference produces real data."""
+        from config.emotions import UNIFIED_EMOTIONS
+        uniform = {e: 1.0 / len(UNIFIED_EMOTIONS) for e in UNIFIED_EMOTIONS}
+        return {
+            "vision":  {"dominant": "neutral", "confidence": 0.0, "probabilities": uniform},
+            "audio":   {"dominant": "neutral", "confidence": 0.0, "probabilities": uniform},
+            "text":    {"dominant": "neutral", "confidence": 0.0, "probabilities": uniform},
+            "fusion":  {
+                "dominant_emotion":   "neutral",
+                "confidence":         0.0,
+                "incongruence_score": 0.0,
+                "fused_probabilities": uniform,
+            },
+            "agent_response": "Session starting — I'll be right with you.",
+            "fps":            0.0,
+            "frame_count":    0,
+        }
+
+    # ── Simulation ───────────────────────────────────────────────────────────
+
+    def _simulate(self) -> dict:
+        """
+        Smooth simulation for demo / testing without trained model weights.
+        Emotions transition smoothly over ~3 second windows rather than
+        jumping randomly each frame, which is much more realistic.
+        """
+        import random
+        from config.emotions import UNIFIED_EMOTIONS
+
+        if not hasattr(self, "_sim_target"):
+            self._sim_target = "neutral"
+            self._sim_tick   = 0
+            self._sim_probs  = {
+                k: {e: 1.0 / len(UNIFIED_EMOTIONS) for e in UNIFIED_EMOTIONS}
+                for k in ["v", "a", "t", "f"]
             }
+            self._sim_agent_responses = [
+                "I'm noticing some changes in your expression. Take a deep breath.",
+                "You seem calm right now. Keep it up!",
+                "I'm here to listen if you want to talk about what's on your mind.",
+                "Your signals show a bit of variation. Is everything okay?",
+                "Let's take a moment to ground ourselves together.",
+                "You are doing great — keep going. 💙",
+            ]
+            self._sim_resp_idx = 0
+
+        self._sim_tick += 1
+
+        # Change target emotion roughly every 3 seconds at 30 FPS
+        if self._sim_tick % 90 == 0:
+            self._sim_target = random.choice(UNIFIED_EMOTIONS)
+
+        def smooth_toward(cur: dict, dominant: str, momentum: float = 0.97) -> dict:
+            """Exponential moving average toward a target distribution."""
+            target = {e: 0.04 for e in UNIFIED_EMOTIONS}
+            target[dominant] = 0.65
+            smoothed = {e: cur[e] * momentum + target[e] * (1.0 - momentum)
+                        for e in UNIFIED_EMOTIONS}
+            total = sum(smoothed.values())
+            return {k: v / total for k, v in smoothed.items()}
+
+        # Each modality lags slightly differently → realistic incongruence
+        self._sim_probs["v"] = smooth_toward(self._sim_probs["v"], self._sim_target, 0.97)
+        self._sim_probs["a"] = smooth_toward(self._sim_probs["a"], self._sim_target, 0.96)
+        self._sim_probs["t"] = smooth_toward(self._sim_probs["t"], self._sim_target, 0.98)
+        self._sim_probs["f"] = smooth_toward(self._sim_probs["f"], self._sim_target, 0.95)
+
+        def to_result(p: dict) -> dict:
+            dom = max(p, key=p.get)
+            return {"dominant": dom, "confidence": p[dom], "probabilities": dict(p)}
+
+        # Rotate agent response every 120 frames (~4 seconds)
+        if self._sim_tick % 120 == 0:
+            self._sim_resp_idx = (self._sim_resp_idx + 1) % len(self._sim_agent_responses)
+
+        v_dom = max(self._sim_probs["v"], key=self._sim_probs["v"].get)
+        a_dom = max(self._sim_probs["a"], key=self._sim_probs["a"].get)
+        t_dom = max(self._sim_probs["t"], key=self._sim_probs["t"].get)
+        inc   = 0.08 if v_dom == a_dom == t_dom else 0.52
+
+        return {
+            "vision": to_result(self._sim_probs["v"]),
+            "audio":  to_result(self._sim_probs["a"]),
+            "text":   to_result(self._sim_probs["t"]),
+            "fusion": {
+                "dominant_emotion":    max(self._sim_probs["f"], key=self._sim_probs["f"].get),
+                "confidence":          max(self._sim_probs["f"].values()),
+                "incongruence_score":  round(inc + (self._sim_tick % 7) * 0.01, 3),
+                "fused_probabilities": dict(self._sim_probs["f"]),
+            },
+            "agent_response": self._sim_agent_responses[self._sim_resp_idx],
+        }

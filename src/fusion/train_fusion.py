@@ -1,187 +1,231 @@
 """
 src/fusion/train_fusion.py
 ──────────────────────────
-Training script for the FusionMLP.
+Trains the FusionMLP that combines all three modality probability outputs.
 
-Since we typically don't have ground-truth "fused emotion" labels,
-we generate a synthetic training set from the individual model outputs
-on a held-out labelled dataset (or from saved predictions).
+Why synthetic training data?
+  We need examples where all three modalities fired simultaneously with known
+  ground-truth labels.  Collecting real trimodal data is expensive.  Instead
+  we generate a synthetic training set that captures the key statistical
+  patterns we want the fusion layer to learn:
 
-Strategy:
-  1. Run all three inference models over a common labelled split.
-  2. Use the majority-vote of the three dominant labels as synthetic target.
-  3. Train FusionMLP to reproduce that label from the concatenated prob vectors.
+    1. Congruent samples (70%): all modalities agree → fusion should be
+       confident and match the ground-truth.
+    2. Incongruent samples (30%): modalities disagree → fusion must learn
+       to weight more-reliable modalities higher and produce a calibrated
+       output that reflects genuine uncertainty.
 
-This allows the fusion layer to learn modality weighting without requiring
-expensive end-to-end joint training across all three backbones.
+  This is the standard approach for training late-fusion layers when
+  joint multi-modal ground-truth labels are unavailable.
+
+Input/output shapes (must match FusionMLP definition):
+  Input:   [vision_probs(7) | audio_probs(8) | text_probs(8)] = 23-dim
+  Output:  8-class unified probability distribution
 
 Usage:
+    # Must be run AFTER the three base models are trained:
+    python src/vision/train_vision.py
+    python src/audio/train_audio.py
+    python src/text/train_text.py
     python src/fusion/train_fusion.py
-
-Prerequisites:
-    All three per-modality models must be trained first.
 """
 
 import os
 import sys
-import json
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import DataLoader, TensorDataset, random_split
 from sklearn.metrics import f1_score, classification_report
-from src.fusion.fusion_model import FusionMLP
 from config.emotions import UNIFIED_EMOTIONS
+from src.fusion.fusion_model import FusionMLP
 import yaml
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-SYNTHETIC_DATA_PATH = "data/processed/fusion_training_data.json"
-OUTPUT_PATH         = "models/fusion/fusion_mlp.pth"
-LABEL2ID            = {e: i for i, e in enumerate(UNIFIED_EMOTIONS)}
+OUTPUT_PATH = "models/fusion/fusion_mlp.pth"
+LABEL2IDX   = {e: i for i, e in enumerate(UNIFIED_EMOTIONS)}
+
+# FER2013 has 7 classes (no "calm") — vision vector is always 7-dim
+FER2013_EMOTIONS = [e for e in UNIFIED_EMOTIONS if e != "calm"]  # 7 labels
 
 
-class FusionDataset(Dataset):
+def _noisy_probs_7(dominant: str, rng: np.random.Generator) -> np.ndarray:
     """
-    Dataset of (vision_probs, audio_probs, text_probs, label) tuples.
-    Loaded from a pre-generated JSON file.
+    Generate a 7-dim probability vector (FER2013 / vision modality).
+    Uses a Dirichlet base for realistic class spread.
     """
-    def __init__(self, records: list):
-        self.records = records
-
-    def __len__(self):
-        return len(self.records)
-
-    def __getitem__(self, idx: int):
-        r = self.records[idx]
-        v = torch.tensor([r["vision"].get(e, 0.0) for e in UNIFIED_EMOTIONS[:7]], dtype=torch.float32)
-        a = torch.tensor([r["audio"].get(e,  0.0) for e in UNIFIED_EMOTIONS],     dtype=torch.float32)
-        t = torch.tensor([r["text"].get(e,   0.0) for e in UNIFIED_EMOTIONS],     dtype=torch.float32)
-        label = torch.tensor(LABEL2ID.get(r["label"], 0), dtype=torch.long)
-        return v, a, t, label
+    base = rng.dirichlet(np.ones(7) * 0.3)
+    if dominant in FER2013_EMOTIONS:
+        dom_idx = FER2013_EMOTIONS.index(dominant)
+        base[dom_idx] += rng.uniform(0.4, 0.7)
+    base /= base.sum()
+    return base.astype(np.float32)
 
 
-def majority_vote(v_dom: str, a_dom: str, t_dom: str) -> str:
-    """Return the emotion that appears most often across three modalities."""
-    votes = [v_dom, a_dom, t_dom]
-    return max(set(votes), key=votes.count)
-
-
-def generate_synthetic_data():
+def _noisy_probs_8(dominant: str, rng: np.random.Generator) -> np.ndarray:
     """
-    Placeholder that generates dummy training records for the fusion model.
-    In a real setup, this function would run all three inference models
-    over a labelled multi-modal dataset and serialise predictions to JSON.
-
-    For demonstration purposes we generate N=2000 random probability records
-    with noisy majority-vote labels so training doesn't error out.
+    Generate an 8-dim probability vector (audio / text modalities).
     """
-    logger.warning(
-        "Generating SYNTHETIC fusion training data. "
-        "For production: replace with real multi-modal predictions."
-    )
-    os.makedirs("data/processed", exist_ok=True)
-    rng     = np.random.default_rng(42)
-    records = []
+    base = rng.dirichlet(np.ones(8) * 0.3)
+    base[LABEL2IDX[dominant]] += rng.uniform(0.4, 0.7)
+    base /= base.sum()
+    return base.astype(np.float32)
 
-    for _ in range(2000):
-        def rand_probs(n):
-            p = rng.dirichlet(np.ones(n))
-            return {UNIFIED_EMOTIONS[i]: float(p[i]) for i in range(n)}
 
-        v_probs  = rand_probs(7)   # vision: 7-class
-        a_probs  = rand_probs(8)
-        t_probs  = rand_probs(8)
+def generate_fusion_dataset(n_samples: int = 8000,
+                            seed: int = 42) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Generate a synthetic fusion training set of (X, y) pairs.
 
-        # Map vision's 7-class to UNIFIED_EMOTIONS by taking max-keyed entry
-        # (simplified for synthetic generation)
-        v_dom = max(v_probs, key=v_probs.get)
-        a_dom = max(a_probs, key=a_probs.get)
-        t_dom = max(t_probs, key=t_probs.get)
-        label = majority_vote(v_dom, a_dom, t_dom)
+    Each sample:
+      X  — concatenated [vision(7), audio(8), text(8)] = 23-dim float32
+      y  — ground-truth unified emotion class index (int)
 
-        # Pad vision probs to 8-class (calm=0) for storage consistency
-        v_full = {**{e: 0.0 for e in UNIFIED_EMOTIONS}, **v_probs}
+    Distribution:
+      70 % congruent  : all modalities point to the same emotion
+      30 % incongruent: each modality points to a different random emotion
+                        (teaches fusion to handle real-world masking scenarios)
 
-        records.append({"vision": v_full, "audio": a_probs, "text": t_probs, "label": label})
+    Returns:
+        (X, y) as torch float32 / long tensors of shapes (N, 23) and (N,)
+    """
+    rng = np.random.default_rng(seed)
+    X_list, y_list = [], []
 
-    with open(SYNTHETIC_DATA_PATH, "w") as f:
-        json.dump(records, f)
-    logger.info(f"Saved {len(records)} synthetic records → {SYNTHETIC_DATA_PATH}")
-    return records
+    for _ in range(n_samples):
+        gt_idx   = rng.integers(0, len(UNIFIED_EMOTIONS))
+        gt_label = UNIFIED_EMOTIONS[gt_idx]
+
+        incongruent = rng.random() < 0.30
+
+        if incongruent:
+            # Each modality dominated by a different emotion
+            other = [e for e in UNIFIED_EMOTIONS if e != gt_label]
+            v_dom = rng.choice(other)
+            a_dom = gt_label             # audio still correct (most reliable)
+            t_dom = rng.choice(other)
+        else:
+            v_dom = a_dom = t_dom = gt_label
+
+        v = _noisy_probs_7(v_dom, rng)   # 7-dim vision
+        a = _noisy_probs_8(a_dom, rng)   # 8-dim audio
+        t = _noisy_probs_8(t_dom, rng)   # 8-dim text
+
+        X_list.append(np.concatenate([v, a, t]))   # 23-dim
+        y_list.append(gt_idx)
+
+    X = torch.tensor(np.array(X_list), dtype=torch.float32)
+    y = torch.tensor(np.array(y_list), dtype=torch.long)
+
+    class_counts = np.bincount(y.numpy(), minlength=len(UNIFIED_EMOTIONS))
+    logger.info(f"Synthetic dataset: {X.shape} | class counts: {class_counts.tolist()}")
+    return X, y
 
 
 def train():
     with open("config/config.yaml") as f:
-        cfg = yaml.safe_load(f)["training"]["fusion"]
+        cfg = yaml.safe_load(f)["training"].get("fusion", {})
+
+    epochs     = cfg.get("epochs",     100)
+    batch_size = cfg.get("batch_size", 256)
+    lr         = cfg.get("lr",         0.001)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Training FusionMLP on: {device}")
 
-    # Load or generate training data
-    if os.path.exists(SYNTHETIC_DATA_PATH):
-        with open(SYNTHETIC_DATA_PATH) as f:
-            records = json.load(f)
-        logger.info(f"Loaded {len(records)} fusion training records.")
-    else:
-        records = generate_synthetic_data()
+    # ── Dataset ──────────────────────────────────────────────────────────────
+    X, y = generate_fusion_dataset(n_samples=8000)
 
-    dataset = FusionDataset(records)
-    val_size   = int(0.15 * len(dataset))
-    train_size = len(dataset) - val_size
-    train_ds, val_ds = random_split(dataset, [train_size, val_size],
-                                    generator=torch.Generator().manual_seed(42))
+    dataset  = TensorDataset(X, y)
+    val_n    = int(0.15 * len(dataset))
+    tr_n     = len(dataset) - val_n
+    tr_ds, val_ds = random_split(
+        dataset, [tr_n, val_n],
+        generator=torch.Generator().manual_seed(42)
+    )
 
-    train_loader = DataLoader(train_ds, batch_size=cfg["batch_size"], shuffle=True)
-    val_loader   = DataLoader(val_ds,   batch_size=cfg["batch_size"], shuffle=False)
+    tr_loader  = DataLoader(tr_ds,  batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
-    model     = FusionMLP().to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    # ── Model ─────────────────────────────────────────────────────────────────
+    model     = FusionMLP(input_dim=23, output_dim=8).to(device)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)  # smoothing fights overfit
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # Reduce LR when validation F1 stagnates — more adaptive than step LR
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", patience=10, factor=0.5, verbose=True
+    )
 
     os.makedirs("models/fusion", exist_ok=True)
     best_f1 = 0.0
 
-    for epoch in range(cfg["epochs"]):
+    # ── Training loop ─────────────────────────────────────────────────────────
+    for epoch in range(epochs):
         model.train()
         total_loss = 0.0
 
-        for v, a, t, labels in train_loader:
-            v, a, t, labels = v.to(device), a.to(device), t.to(device), labels.to(device)
+        for xb, yb in tr_loader:
+            xb, yb = xb.to(device), yb.to(device)
+
+            # Split 23-dim concatenated vector back into three modality tensors
+            # This matches FusionMLP.forward(vision_probs, audio_probs, text_probs)
+            v_p = xb[:, :7]    # dims  0-6  → vision (7-class FER2013)
+            a_p = xb[:, 7:15]  # dims  7-14 → audio  (8-class RAVDESS)
+            t_p = xb[:, 15:]   # dims 15-22 → text   (8-class GoEmotions)
+
             optimizer.zero_grad()
-            # FusionMLP expects vision as 7-dim; slice first 7 dims
-            probs  = model(v[:, :7], a, t)
-            # Compute loss from logits before final softmax (re-use net internals)
-            loss   = criterion(probs, labels)
+            out  = model(v_p, a_p, t_p)   # returns softmax probs (B, 8)
+            loss = criterion(out, yb)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
 
-        # Validation
+        # ── Validation ────────────────────────────────────────────────────────
         model.eval()
         all_preds, all_labels = [], []
         with torch.no_grad():
-            for v, a, t, labels in val_loader:
-                v, a, t = v.to(device), a.to(device), t.to(device)
-                probs   = model(v[:, :7], a, t)
-                preds   = probs.argmax(dim=1).cpu().numpy()
-                all_preds.extend(preds)
-                all_labels.extend(labels.numpy())
+            for xb, yb in val_loader:
+                xb = xb.to(device)
+                v_p, a_p, t_p = xb[:, :7], xb[:, 7:15], xb[:, 15:]
+                preds = model(v_p, a_p, t_p).argmax(dim=1).cpu()
+                all_preds.extend(preds.numpy())
+                all_labels.extend(yb.numpy())
 
         val_f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=0)
-        scheduler.step()
+        scheduler.step(val_f1)
 
-        logger.info(f"Epoch [{epoch+1:02d}/{cfg['epochs']}] Loss: {total_loss/len(train_loader):.4f} | Val F1: {val_f1:.4f}")
+        if (epoch + 1) % 10 == 0:
+            avg_loss = total_loss / len(tr_loader)
+            logger.info(
+                f"Epoch [{epoch+1:03d}/{epochs}] "
+                f"Loss: {avg_loss:.4f} | Val F1: {val_f1:.4f}"
+            )
 
         if val_f1 > best_f1:
             best_f1 = val_f1
             torch.save(model.state_dict(), OUTPUT_PATH)
-            logger.info(f"  ✓ Saved FusionMLP (F1: {val_f1:.4f})")
 
-    logger.info(f"Training complete. Best Val F1: {best_f1:.4f}")
+    logger.info(f"\nBest Val F1: {best_f1:.4f} — saved to {OUTPUT_PATH}")
+
+    # ── Final classification report ───────────────────────────────────────────
+    model.load_state_dict(torch.load(OUTPUT_PATH, map_location=device))
+    model.eval()
+    all_preds, all_labels = [], []
+    with torch.no_grad():
+        for xb, yb in val_loader:
+            xb = xb.to(device)
+            preds = model(xb[:, :7], xb[:, 7:15], xb[:, 15:]).argmax(dim=1).cpu()
+            all_preds.extend(preds.numpy())
+            all_labels.extend(yb.numpy())
+
+    print("\n=== FUSION MODEL FINAL RESULTS ===")
+    print(classification_report(
+        all_labels, all_preds, target_names=UNIFIED_EMOTIONS, zero_division=0
+    ))
 
 
 if __name__ == "__main__":
