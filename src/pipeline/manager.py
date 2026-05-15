@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 # ── Toggle ─────────────────────────────────────────────────────────────────────
 # Keep True until all four model weights exist in models/ subdirs.
 # Set False ONLY after running all four training scripts successfully.
+# Set True ONLY for UI development without model weights
+# Set False when models/ folders contain trained checkpoints
 SIMULATION_MODE = True
 
 
@@ -61,9 +63,15 @@ class PipelineManager:
         self._capture_thread   = None
         self._inference_thread = None
 
+        # Last transcribed text — updated every 5th inference frame
+        self._last_transcribed = ""
+
         # Load heavy ML models ONCE at construction time (not per frame)
         if not SIMULATION_MODE:
             self._load_models()
+            # Audio recorder — started when pipeline starts
+            from src.audio.recorder import AudioRecorder
+            self._audio_recorder = AudioRecorder()
 
     # ── Model loading ────────────────────────────────────────────────────────
 
@@ -86,6 +94,11 @@ class PipelineManager:
             os.getenv("FUSION_MODEL_PATH",  "models/fusion/fusion_mlp.pth"))
         logger.info("All models loaded.")
 
+        # Whisper STT — tiny model for real-time transcription
+        from src.text.transcriber import Transcriber
+        self.transcriber = Transcriber(model_size="tiny")
+        logger.info("Whisper STT loaded.")
+
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def start(self):
@@ -98,6 +111,8 @@ class PipelineManager:
             target=self._inference_loop, daemon=True, name="trifusion-inference")
         self._capture_thread.start()
         self._inference_thread.start()
+        if not SIMULATION_MODE and hasattr(self, '_audio_recorder'):
+            self._audio_recorder.start()
         logger.info("Pipeline started (capture + inference threads).")
 
     def stop(self):
@@ -111,10 +126,11 @@ class PipelineManager:
             self._capture_thread.join(timeout=2)
         if self._inference_thread:
             self._inference_thread.join(timeout=2)
-        
+        if not SIMULATION_MODE and hasattr(self, '_audio_recorder'):
+            self._audio_recorder.stop()
         with self._display_lock:
             self._display_frame = None
-            
+
         logger.info("Pipeline stopped.")
 
     # ── Capture thread ───────────────────────────────────────────────────────
@@ -123,8 +139,16 @@ class PipelineManager:
         """
         Runs at full camera speed.  Zero ML work here.
         CAP_PROP_BUFFERSIZE=1 prevents OpenCV from buffering stale frames.
+        Uses AVFoundation backend on macOS for maximum FPS.
         """
-        cap = cv2.VideoCapture(0)
+        import platform
+        if platform.system() == "Darwin":
+            cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+        else:
+            cap = cv2.VideoCapture(0)
+
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(0)  # retry with default backend
 
         if not cap.isOpened():
             logger.warning("No camera found — using blank placeholder frame.")
@@ -141,7 +165,8 @@ class PipelineManager:
                 time.sleep(0.1)
             return
 
-        # Low-latency capture settings
+        # Force MJPEG codec for maximum USB bandwidth efficiency
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -211,12 +236,40 @@ class PipelineManager:
                     # Vision: BGR frame → 7-class FER2013 probs
                     v_res = self.vision_inf.predict(frame)
 
-                    # Audio: placeholder waveform until mic recorder is wired
-                    a_res = self.audio_inf.predict(
-                        np.zeros(16000, dtype=np.float32))
+                    # Draw face overlay directly onto the display frame
+                    # Done in inference thread so capture thread stays pure
+                    if v_res.get("face_detected") and v_res.get("bbox"):
+                        annotated = self.vision_inf.face_detector.draw_overlay(
+                            frame.copy(),
+                            v_res["bbox"],
+                            v_res["dominant"],
+                            v_res["confidence"]
+                        )
+                        rgb_annotated = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                        rgb_annotated = np.ascontiguousarray(rgb_annotated)
+                        with self._display_lock:
+                            self._display_frame = rgb_annotated
 
-                    # Text: placeholder until Whisper STT is wired
-                    t_res = self.text_inf.predict("")
+                    # Audio: real microphone waveform via AudioRecorder
+                    waveform = (
+                        self._audio_recorder.get_chunk()
+                        if hasattr(self, '_audio_recorder') and self._audio_recorder.is_active
+                        else np.zeros(16000, dtype=np.float32)
+                    )
+                    a_res = self.audio_inf.predict(waveform)
+
+                    # Text: Whisper STT (every 5th frame to save CPU)
+                    if agent_ticker % 5 == 0 and hasattr(self, '_audio_recorder'):
+                        waveform_for_stt = (
+                            self._audio_recorder.get_chunk()
+                            if self._audio_recorder.is_active
+                            else np.zeros(16000, dtype=np.float32)
+                        )
+                        transcribed_text = self.transcriber.transcribe(waveform_for_stt)
+                        self._last_transcribed = transcribed_text
+                    else:
+                        transcribed_text = self._last_transcribed
+                    t_res = self.text_inf.predict(transcribed_text)
 
                     # Fusion: late-fusion MLP + KL incongruence scorer
                     f_res = self.fusion_inf.fuse(v_res, a_res, t_res)
@@ -248,10 +301,14 @@ class PipelineManager:
                                     dominant      = t_res["dominant"],
                                     confidence    = t_res["confidence"],
                                     probabilities = t_res["probabilities"]),
-                                user_text = ""
+                                user_text = self._last_transcribed
                             )
                             agent_state.current_frame = ef
-                            agent_state   = wellness_agent.invoke(agent_state)
+
+                            # LangGraph invoke returns a dictionary; cast it back to AgentState
+                            # to preserve dot-notation compatibility in the next loop iteration.
+                            output = wellness_agent.invoke(agent_state.model_dump())
+                            agent_state = AgentState(**output)
                             agent_response = agent_state.agent_response
                         except Exception as e:
                             logger.warning(f"WellnessAgent error: {e}")

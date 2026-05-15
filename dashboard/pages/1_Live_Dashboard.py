@@ -89,17 +89,27 @@ with col_left:
     ctrl_c1, ctrl_c2, ctrl_c3 = st.columns([2, 2, 3])
     with ctrl_c1:
         if not st.session_state.session_running:
-            if st.button("▶ Start Session", type="primary", use_container_width=True,
-                         key="btn_start"):
-                st.session_state.pipeline.start()
-                st.session_state.session_running = True
-                st.session_state.start_time      = time.time()
-                st.session_state.timeline_data   = []
-                st.rerun()
+            if st.session_state.get("show_results_popup"):
+                st.success("✅ Session Recorded!")
+                c1, c2 = st.columns(2)
+                if c1.button("📈 View Results", type="primary", use_container_width=True):
+                    st.session_state.show_results_popup = False
+                    st.switch_page("pages/4_Session_History.py")
+                if c2.button("Dismiss", use_container_width=True):
+                    st.session_state.show_results_popup = False
+                    st.rerun()
+            else:
+                if st.button("▶ Start Session", type="primary", use_container_width=True, key="btn_start"):
+                    st.session_state.pipeline.start()
+                    st.session_state.session_running = True
+                    st.session_state.start_time      = time.time()
+                    st.session_state.timeline_data   = []
+                    st.rerun()
         else:
             if st.button("⏹ Stop Session", use_container_width=True, key="btn_stop"):
                 st.session_state.pipeline.stop()
                 st.session_state.session_running = False
+                st.session_state.show_results_popup = True
                 st.rerun()
     with ctrl_c2:
         fps_badge_ph = st.empty()
@@ -136,14 +146,17 @@ timeline_ph = st.empty()
 # ── HELPERS — render idle state elements once (outside fragment) ──────────────
 def _render_idle_camera():
     webcam_ph.markdown("""
-    <div style="background:#13131a; border:2px dashed #2a2a3a; border-radius:14px;
-                height:360px; display:flex; align-items:center; justify-content:center;
-                flex-direction:column; gap:14px;">
-        <div style="font-size:3.5rem; opacity:0.25;">📷</div>
-        <div style="color:#64748b; font-size:0.9rem; text-align:center; line-height:1.6;">
-            Camera feed will appear here during an active session.<br>
-            <span style="color:#6366f1; font-size:0.82rem;">
-                Click <b>▶ Start Session</b> to begin.
+    <div style="background: linear-gradient(135deg, #0a0a0f 0%, #13131a 100%);
+                border: 2px dashed #2a2a3a; border-radius: 16px;
+                height: 400px; display: flex; align-items: center;
+                justify-content: center; flex-direction: column; gap: 16px;
+                position: relative; overflow: hidden;">
+        <div style="position:absolute; inset:0; background: radial-gradient(ellipse at 50% 50%, rgba(99,102,241,0.05) 0%, transparent 70%);"></div>
+        <div style="font-size: 4rem; opacity: 0.2; filter: grayscale(1);">📷</div>
+        <div style="color: #64748b; font-size: 0.9rem; text-align: center; line-height: 1.8; z-index: 1;">
+            Camera feed will appear here.<br>
+            <span style="color: #6366f1; font-size: 0.82rem; font-weight: 500;">
+                Click ▶ Start Session to begin analysis.
             </span>
         </div>
     </div>
@@ -184,10 +197,8 @@ agent_ph.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-import PIL.Image
-
-# ── FRAGMENT: refreshes at 5 Hz for maximum stability ────────────────────────
-@st.fragment(run_every=0.2)
+# ── FRAGMENT: refreshes at 30 Hz for smooth UI ───────────────────────────────
+@st.fragment(run_every=0.033)
 def sync_dashboard():
     """Reads latest data from the background pipeline and updates all UI placeholders."""
 
@@ -212,13 +223,18 @@ def sync_dashboard():
 
     # ── 1. Camera feed ────────────────────────────────────────────────────────
     if frame is not None:
-        try:
-            # Converting to PIL is often more stable for Streamlit serialization
-            pil_img = PIL.Image.fromarray(frame)
-            webcam_ph.image(pil_img, use_container_width=True)
-        except Exception:
-            # Fallback to raw if PIL fails
-            webcam_ph.image(frame, channels="RGB", use_container_width=True)
+        # Base64 encoding bypasses Streamlit's buggy MediaFileStorage garbage collection
+        # which causes "Bad filename / Missing file" errors at high FPS.
+        import cv2
+        import base64
+        # Frame is RGB from pipeline, cv2 expects BGR for correct JPEG encoding colors
+        bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        _, buffer = cv2.imencode('.jpg', bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        b64_str = base64.b64encode(buffer).decode('utf-8')
+        webcam_ph.markdown(
+            f'<img src="data:image/jpeg;base64,{b64_str}" style="width:100%; border-radius:8px; border:1px solid #2a2a3a;">',
+            unsafe_allow_html=True
+        )
     elif not st.session_state.session_running:
         _render_idle_camera()
 

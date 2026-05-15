@@ -1,95 +1,185 @@
 """
 dashboard/pages/3_Demo_Scenarios.py
 ─────────────────────────────────────
-Demo Scenarios — Simulated trimodal emotion readings with agent responses.
-No camera or microphone required — great for evaluations and presentations.
+Pre-built demo scenarios for when webcam isn't available.
+Shows exactly what TriFusion detects and how WellnessAgent responds.
 """
-
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import streamlit as st
-from dashboard.components.sidebar import render_sidebar
+import plotly.graph_objects as go
 from dashboard.components.radar_chart import render_radar_chart
 from dashboard.components.incongruence_meter import render_incongruence_meter
-from src.fusion.incongruence import compute_incongruence
-
-st.set_page_config(page_title="TriFusion | Demo", layout="wide")
+from dashboard.components.sidebar import render_sidebar
+from config.emotions import UNIFIED_EMOTIONS
 
 render_sidebar()
 
 st.markdown("## 🎭 Demo Scenarios")
-st.markdown("*Explore how TriFusion responds to different emotional patterns — no camera required.*")
-st.markdown("---")
+st.markdown("*Four archetypal emotional states demonstrating TriFusion's detection capabilities.*")
+st.markdown("""
+<div style="background:#0f172a; border-left:4px solid #6366f1; padding:0.6rem 1rem;
+            border-radius:6px; margin-bottom:1.5rem;">
+    <div style="color:#a5b4fc; font-size:0.83rem;">
+        These scenarios use pre-computed values to illustrate what TriFusion detects
+        in the wild. Run the Live Dashboard with a webcam for real-time analysis.
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-SCENARIOS = {
-    "😷 Masked Distress (High Incongruence)": {
-        "description": "Face and voice signal fear/sadness, but the person says 'I'm totally fine.'",
-        "vision": {"neutral":0.05,"happy":0.03,"sad":0.15,"angry":0.05,"fearful":0.60,"surprised":0.07,"disgusted":0.02,"calm":0.03},
-        "audio":  {"neutral":0.10,"happy":0.04,"sad":0.20,"angry":0.06,"fearful":0.45,"surprised":0.05,"disgusted":0.04,"calm":0.06},
-        "text":   {"neutral":0.20,"happy":0.62,"sad":0.04,"angry":0.03,"fearful":0.03,"surprised":0.04,"disgusted":0.01,"calm":0.03},
-        "user_text": "I'm totally fine, don't worry about me.",
-        "expected_route": "escalate / grounding_technique",
-        "response": """🔴 **Masked Distress Protocol Active**\n\nI sense there might be more going on than what you're expressing — and that's completely okay.\n\nLet's try a quick grounding exercise: look around and name **5 things you can see**, **4 you can touch**, **3 you can hear**, **2 you can smell**, **1 you can taste**.\n\nTake your time. I'm here."""
+SCENARIOS = [
+    {
+        "id": 1,
+        "title": "The Hidden Stress",
+        "emoji": "😐",
+        "description": "User appears neutral, speaks calmly, but words carry underlying anxiety. Classic suppression pattern found in high-pressure work environments.",
+        "face":  {"neutral": 0.48, "fearful": 0.22, "sad": 0.12, "angry": 0.08, "happy": 0.04, "surprised": 0.03, "disgusted": 0.02, "calm": 0.01},
+        "voice": {"neutral": 0.35, "calm": 0.28, "fearful": 0.18, "sad": 0.10, "happy": 0.05, "angry": 0.03, "surprised": 0.01, "disgusted": 0.00},
+        "text":  {"neutral": 0.52, "happy": 0.21, "calm": 0.14, "surprised": 0.05, "sad": 0.04, "fearful": 0.02, "angry": 0.01, "disgusted": 0.01},
+        "incongruence": 0.76,
+        "fused_dominant": "fearful",
+        "fused_confidence": 0.61,
+        "user_said": "I'm doing fine, just got a lot on my plate right now.",
+        "agent_intervention": "breathing_exercise",
+        "agent_response": "I hear you — having a full plate takes real energy to manage. Let's try something quick:\n\nBreathe in for **4 counts**, hold for **7**, out for **8**.\n\nYou don't have to solve everything right now. Just this breath.",
     },
-    "😊 Genuine Happiness (Low Incongruence)": {
-        "description": "All three modalities agree — the person is genuinely happy.",
-        "vision": {"neutral":0.08,"happy":0.72,"sad":0.03,"angry":0.02,"fearful":0.03,"surprised":0.08,"disgusted":0.01,"calm":0.03},
-        "audio":  {"neutral":0.12,"happy":0.65,"sad":0.05,"angry":0.03,"fearful":0.04,"surprised":0.06,"disgusted":0.01,"calm":0.04},
-        "text":   {"neutral":0.15,"happy":0.60,"sad":0.04,"angry":0.02,"fearful":0.03,"surprised":0.10,"disgusted":0.01,"calm":0.05},
-        "user_text": "I just got amazing news — I'm really excited!",
-        "expected_route": "positive_reinforcement",
-        "response": """✨ **Genuine Joy Detected**\n\nYou're in a beautiful space right now — and that's worth pausing for.\n\nLet yourself really be here in it. These moments are worth noticing.\n\nKeep going — whatever you're doing, it's working."""
+    {
+        "id": 2,
+        "title": "Genuine Happiness",
+        "emoji": "😊",
+        "description": "All three modalities aligned on joy. Low incongruence. This is what authentic positive emotion looks like — face, voice, and words all telling the same story.",
+        "face":  {"happy": 0.72, "calm": 0.10, "surprised": 0.08, "neutral": 0.05, "fearful": 0.02, "sad": 0.01, "angry": 0.01, "disgusted": 0.01},
+        "voice": {"happy": 0.68, "calm": 0.14, "neutral": 0.10, "surprised": 0.05, "fearful": 0.01, "sad": 0.01, "angry": 0.01, "disgusted": 0.00},
+        "text":  {"happy": 0.75, "calm": 0.09, "neutral": 0.08, "surprised": 0.04, "fearful": 0.02, "sad": 0.01, "angry": 0.01, "disgusted": 0.00},
+        "incongruence": 0.08,
+        "fused_dominant": "happy",
+        "fused_confidence": 0.71,
+        "user_said": "That actually went really well! I'm genuinely excited about this.",
+        "agent_intervention": "positive_reinforcement",
+        "agent_response": "That energy is real — hold onto this feeling for a moment.\n\nNotice how your body feels right now. This is what it feels like when things click.",
     },
-    "😡 Anger with Verbal Suppression": {
-        "description": "Face and voice show clear anger, but the person tries to sound neutral.",
-        "vision": {"neutral":0.05,"happy":0.02,"sad":0.08,"angry":0.72,"fearful":0.05,"surprised":0.04,"disgusted":0.03,"calm":0.01},
-        "audio":  {"neutral":0.10,"happy":0.03,"sad":0.07,"angry":0.60,"fearful":0.08,"surprised":0.04,"disgusted":0.05,"calm":0.03},
-        "text":   {"neutral":0.55,"happy":0.10,"sad":0.08,"angry":0.12,"fearful":0.06,"surprised":0.04,"disgusted":0.03,"calm":0.02},
-        "user_text": "It's fine. I'm not upset about anything.",
-        "expected_route": "grounding_technique",
-        "response": """🟠 **Suppressed Anger Detected**\n\nIt's okay to feel what you're feeling — anger is a signal, not a flaw.\n\nTry **box breathing**: inhale 4 counts → hold 4 → exhale 4 → hold 4. Repeat 3 times.\n\nWhenever you're ready, we can talk about what's underneath it."""
+    {
+        "id": 3,
+        "title": "Masked Fear",
+        "emoji": "😬",
+        "description": "The most dangerous pattern. Face and voice both showing fear while words assert everything is fine. High incongruence triggers escalation protocol.",
+        "face":  {"fearful": 0.61, "sad": 0.18, "neutral": 0.10, "angry": 0.05, "disgusted": 0.03, "happy": 0.01, "surprised": 0.01, "calm": 0.01},
+        "voice": {"fearful": 0.52, "neutral": 0.22, "calm": 0.12, "sad": 0.08, "angry": 0.04, "happy": 0.01, "surprised": 0.01, "disgusted": 0.00},
+        "text":  {"happy": 0.58, "neutral": 0.24, "calm": 0.11, "surprised": 0.04, "fearful": 0.02, "sad": 0.01, "angry": 0.00, "disgusted": 0.00},
+        "incongruence": 0.89,
+        "fused_dominant": "fearful",
+        "fused_confidence": 0.68,
+        "user_said": "I'm fine. Everything is totally fine. Please don't worry about me.",
+        "agent_intervention": "escalation",
+        "agent_response": "I notice you're working hard to hold things together right now — and I want you to know that takes courage.\n\nIf you're carrying something difficult, you don't have to carry it alone. These are available 24/7:\n\n📞 **iCall India:** 9152987821\n📞 **Vandrevala Foundation:** 1860-2662-345\n\nYou reached out. That matters.",
     },
-    "😢 Genuine Sadness (Aligned Signals)": {
-        "description": "All three modalities agree on sadness — person is openly expressing grief.",
-        "vision": {"neutral":0.08,"happy":0.03,"sad":0.72,"angry":0.05,"fearful":0.06,"surprised":0.03,"disgusted":0.02,"calm":0.01},
-        "audio":  {"neutral":0.10,"happy":0.04,"sad":0.68,"angry":0.06,"fearful":0.07,"surprised":0.02,"disgusted":0.02,"calm":0.01},
-        "text":   {"neutral":0.10,"happy":0.05,"sad":0.65,"angry":0.05,"fearful":0.08,"surprised":0.03,"disgusted":0.02,"calm":0.02},
-        "user_text": "I've been feeling really down lately, like nothing matters.",
-        "expected_route": "affirmation_generator",
-        "response": """💙 **Genuine Sadness Acknowledged**\n\nWhat you're feeling is real and valid. You don't have to minimise it.\n\nThree things to hold onto:\n1. *This feeling is temporary — even when it doesn't feel like it.*\n2. *You've navigated hard days before. You're still here.*\n3. *Reaching out is a form of courage.*\n\nYou are not alone in this."""
+    {
+        "id": 4,
+        "title": "Suppressed Anger",
+        "emoji": "😤",
+        "description": "Face and voice registering anger but words staying controlled and neutral. Common in professional settings where direct expression isn't acceptable.",
+        "face":  {"angry": 0.58, "disgusted": 0.18, "neutral": 0.12, "sad": 0.06, "fearful": 0.03, "surprised": 0.02, "happy": 0.01, "calm": 0.00},
+        "voice": {"angry": 0.44, "neutral": 0.28, "disgusted": 0.14, "fearful": 0.07, "sad": 0.04, "happy": 0.01, "calm": 0.01, "surprised": 0.01},
+        "text":  {"neutral": 0.61, "sad": 0.14, "calm": 0.10, "happy": 0.07, "fearful": 0.04, "angry": 0.02, "disgusted": 0.01, "surprised": 0.01},
+        "incongruence": 0.72,
+        "fused_dominant": "angry",
+        "fused_confidence": 0.56,
+        "user_said": "I just think there might be a different way to approach this situation.",
+        "agent_intervention": "grounding_technique",
+        "agent_response": "You're navigating something frustrating with a lot of care. Let's slow down for one moment:\n\nName **5 things you can see** around you right now — just look around and notice them.\n\nTake your time. I'll be here.",
     },
-}
+]
 
-selected = st.selectbox("Select a demo scenario:", list(SCENARIOS.keys()))
-scenario = SCENARIOS[selected]
+# Scenario selector
+selected_id = st.radio(
+    "Select scenario",
+    [f"Scenario {s['id']} — {s['emoji']} {s['title']}" for s in SCENARIOS],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+scenario = SCENARIOS[int(selected_id[9]) - 1]
 
-st.markdown(f"**Description:** {scenario['description']}")
-st.markdown(f"**User said:** *\"{scenario['user_text']}\"*")
-st.markdown(f"**Expected route:** `{scenario['expected_route']}`")
+st.markdown(f"### {scenario['emoji']} Scenario {scenario['id']}: {scenario['title']}")
+st.markdown(f"*{scenario['description']}*")
 
-inc_score = compute_incongruence(scenario["vision"], scenario["audio"], scenario["text"])
+# Modality + results layout
+col_l, col_r = st.columns([3, 2])
 
-col_viz, col_meter = st.columns([3, 2], gap="large")
+with col_l:
+    st.markdown("#### Detected Signals")
 
-with col_viz:
-    st.markdown("#### Trimodal Emotion Radar")
-    render_radar_chart({"FACE": scenario["vision"], "VOICE": scenario["audio"], "TEXT": scenario["text"]})
+    inc = scenario["incongruence"]
+    inc_color = "#22c55e" if inc < 0.3 else ("#f59e0b" if inc < 0.7 else "#ef4444")
+    inc_label = "ALIGNED" if inc < 0.3 else ("MODERATE" if inc < 0.7 else "HIGH — MASKING DETECTED")
 
-with col_meter:
-    st.markdown("#### Incongruence Score")
-    render_incongruence_meter(inc_score)
-    st.markdown("#### Signal Summary")
-    for label, key in [("👁 Face","vision"),("🎤 Voice","audio"),("💬 Text","text")]:
-        probs = scenario[key]
+    st.markdown(f"""
+    <div class="metric-card" style="margin-bottom:0.8rem;">
+        <div class="modality-label">🗣 USER SAID</div>
+        <div style="font-style:italic; color:#a5b4fc; font-size:0.95rem; margin-top:4px;">
+            "{scenario['user_said']}"
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    b1, b2, b3 = st.columns(3)
+    def scenario_badge(col, icon, label, probs, color):
         dom = max(probs, key=probs.get)
-        st.markdown(f"""
-        <div class="metric-card" style="margin-bottom:6px;padding:0.7rem 1rem;">
-            <div class="modality-label">{label}</div>
-            <div style="font-weight:600;">{dom.upper()}
-                <span style="color:#64748b;font-weight:400;font-size:0.8rem;"> — {probs[dom]:.0%}</span>
-            </div>
-        </div>""", unsafe_allow_html=True)
+        conf = probs[dom]
+        col.markdown(f"""
+        <div class="metric-card" style="border-color:{color}33;">
+            <div class="modality-label">{icon} {label}</div>
+            <div style="font-weight:700;color:{color};font-size:1rem;text-transform:uppercase;">{dom}</div>
+            <div style="color:#64748b;font-size:0.73rem;margin-top:3px;">{conf:.0%} confidence</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-st.markdown("---")
-st.markdown("### 🤖 WellnessAgent Response")
-st.markdown(f'<div class="agent-response">{scenario["response"]}</div>', unsafe_allow_html=True)
+    scenario_badge(b1, "👁", "FACE",  scenario["face"],  "#6366f1")
+    scenario_badge(b2, "🎤","VOICE", scenario["voice"], "#22d3ee")
+    scenario_badge(b3, "💬","TEXT",  scenario["text"],  "#f59e0b")
+
+    st.markdown(f"""
+    <div class="metric-card" style="border-color:{inc_color}44; margin-top:0.5rem;">
+        <div class="modality-label">📊 INCONGRUENCE SCORE</div>
+        <div style="font-size:2rem;font-weight:700;color:{inc_color};font-family:'Space Mono',monospace;">
+            {inc:.2f}
+        </div>
+        <div style="font-size:0.82rem;color:{inc_color};font-weight:600;">{inc_label}</div>
+        <div style="background:#2a2a3a;border-radius:6px;height:8px;margin-top:8px;overflow:hidden;">
+            <div style="height:100%;width:{inc*100:.0f}%;background:{inc_color};border-radius:6px;
+                        transition:width 0.5s ease;"></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Fused output
+    dom_emotion = scenario["fused_dominant"]
+    EMOTION_COLORS = {"happy":"#22c55e","calm":"#06b6d4","neutral":"#6366f1","surprised":"#f59e0b",
+                      "fearful":"#8b5cf6","sad":"#3b82f6","angry":"#ef4444","disgusted":"#f97316"}
+    dom_color = EMOTION_COLORS.get(dom_emotion, "#6366f1")
+    st.markdown(f"""
+    <div class="metric-card" style="border-color:{dom_color}44;">
+        <div class="modality-label">🧠 FUSED OUTPUT</div>
+        <div style="font-family:'Space Mono',monospace;font-size:1.8rem;font-weight:700;
+                    color:{dom_color};text-transform:uppercase;">{dom_emotion}</div>
+        <div style="color:#64748b;font-size:0.8rem;margin-top:4px;">
+            {scenario['fused_confidence']:.0%} confidence · intervention: {scenario['agent_intervention'].replace('_',' ')}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col_r:
+    st.markdown("#### Emotion Radar")
+    render_radar_chart({
+        "FACE":  scenario["face"],
+        "VOICE": scenario["voice"],
+        "TEXT":  scenario["text"],
+    }, key=f"scenario_radar_{scenario['id']}")
+
+    st.markdown("#### WellnessAgent Response")
+    st.markdown(f"""
+    <div class="agent-response">
+        <span style="font-family:'Space Mono',monospace;font-size:0.62rem;color:#6366f1;
+                     letter-spacing:0.1em;display:block;margin-bottom:8px;">WELLNESSAGENT</span>
+        {scenario['agent_response'].replace(chr(10), '<br>')}
+    </div>
+    """, unsafe_allow_html=True)
