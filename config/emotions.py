@@ -65,7 +65,8 @@ GOEMOTIONS_TO_UNIFIED = {
     "disapproval": "angry","disgust": "disgusted",  "embarrassment": "sad",
     "fear": "fearful",     "grief": "sad",          "nervousness": "fearful",
     "remorse": "sad",      "sadness": "sad",        "confusion": "neutral",
-    "realization": "surprised", "surprise": "surprised", "neutral": "neutral"
+    "realization": "surprised", "surprise": "surprised", "neutral": "neutral",
+    "disappointment": "sad",
 }
 TEXT_NUM_CLASSES = 8
 

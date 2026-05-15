@@ -1,107 +1,89 @@
 """
 src/audio/recorder.py
 ─────────────────────
-Real-time microphone audio capture via sounddevice.
+Real-time microphone capture using sounddevice.
+Captures 3-second rolling windows at 16kHz for Wav2Vec2 processing.
 
-Design:
-  • Uses sounddevice.InputStream with blocksize = sample_rate × chunk_duration
-    so the callback fires exactly once per analysis window (default: 3 s).
-  • Audio is placed on a bounded Queue(maxsize=5) — older chunks are dropped
-    if the inference pipeline falls behind, keeping latency bounded.
-  • The recorder runs entirely in the sounddevice background thread; the
-    main thread just calls .get_chunk() when it needs audio.
-  • Waveform is returned as float32 in [-1, 1] — compatible with
-    Wav2Vec2Processor and Whisper's transcribe() without re-scaling.
+Threading model:
+  - AudioRecorder runs its own background thread via sd.InputStream callback
+  - Frames accumulate in a circular buffer
+  - get_chunk() returns the latest 3-second window (non-blocking)
+  - If less than 3 seconds of audio available, returns silence
 """
 
 import numpy as np
-import queue
-import sounddevice as sd
+import threading
 import logging
-from typing import Optional
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
+SAMPLE_RATE   = 16000
+CHUNK_SECONDS = 3
+CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_SECONDS  # 48,000 samples
+
 
 class AudioRecorder:
-    """
-    Continuous microphone recorder that produces fixed-duration chunks.
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        self.sample_rate    = sample_rate
+        self._buffer        = deque(maxlen=CHUNK_SAMPLES * 2)  # 6 seconds circular
+        self._lock          = threading.Lock()
+        self._stream        = None
+        self._active        = False
 
-    Usage:
-        recorder = AudioRecorder(sample_rate=16000, chunk_duration=3.0)
-        recorder.start()
-        while True:
-            chunk = recorder.get_chunk()  # blocks up to `timeout` seconds
-            # process chunk …
-        recorder.stop()
-    """
+    def start(self):
+        """Start continuous microphone capture."""
+        try:
+            import sounddevice as sd
+            self._stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype=np.float32,
+                blocksize=1600,  # 0.1 second blocks for low latency
+                callback=self._callback
+            )
+            self._stream.start()
+            self._active = True
+            logger.info("Microphone stream started.")
+        except Exception as e:
+            logger.warning(f"Microphone unavailable: {e}. Audio will use silence fallback.")
+            self._active = False
 
-    def __init__(self, sample_rate: int = 16000, chunk_duration: float = 3.0):
-        self.sample_rate   = sample_rate
-        self.chunk_duration = chunk_duration
-        # blocksize in samples = one complete analysis window
-        self.chunk_size    = int(sample_rate * chunk_duration)
-        # Bounded queue — drop stale chunks rather than accumulate lag
-        self.audio_queue   = queue.Queue(maxsize=5)
-        self._stream: Optional[sd.InputStream] = None
-
-    # ------------------------------------------------------------------
-    # Sounddevice callback — executes in a high-priority background thread
-    # ------------------------------------------------------------------
-    def _callback(
-        self,
-        indata: np.ndarray,   # shape: (chunk_size, channels)
-        frames: int,
-        time,
-        status: sd.CallbackFlags
-    ) -> None:
+    def _callback(self, indata: np.ndarray, frames: int, time_info, status):
+        """Called by sounddevice on every block. Appends to circular buffer."""
         if status:
-            logger.warning(f"Audio stream status: {status}")
+            logger.debug(f"Audio status: {status}")
+        with self._lock:
+            self._buffer.extend(indata[:, 0].tolist())  # mono channel
 
-        # Flatten to 1-D mono float32 chunk
-        chunk = indata.copy().flatten().astype(np.float32)
-
-        # Non-blocking put — silently drop if queue is full (keeps latency bounded)
-        try:
-            self.audio_queue.put_nowait(chunk)
-        except queue.Full:
-            logger.debug("Audio queue full — dropping oldest chunk.")
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-    def start(self) -> None:
-        """Open the InputStream and start the background capture thread."""
-        self._stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,              # mono input for Wav2Vec2 / Whisper
-            blocksize=self.chunk_size,
-            callback=self._callback,
-            dtype=np.float32
-        )
-        self._stream.start()
-        logger.info(
-            f"AudioRecorder started | SR={self.sample_rate} Hz | "
-            f"chunk={self.chunk_duration}s ({self.chunk_size} samples)"
-        )
-
-    def get_chunk(self, timeout: float = 4.0) -> Optional[np.ndarray]:
+    def get_chunk(self) -> np.ndarray:
         """
-        Block until a fresh chunk is available or timeout expires.
-
-        Returns:
-            float32 ndarray of shape (chunk_size,), or None on timeout.
+        Returns the latest CHUNK_SAMPLES samples as a float32 numpy array.
+        If not enough audio is buffered, returns silence (zeros).
+        Safe to call from any thread.
         """
-        try:
-            return self.audio_queue.get(timeout=timeout)
-        except queue.Empty:
-            logger.warning("No audio chunk received within timeout.")
-            return None
+        with self._lock:
+            buf = list(self._buffer)
 
-    def stop(self) -> None:
-        """Stop and close the InputStream, releasing the microphone."""
-        if self._stream is not None:
+        if len(buf) >= CHUNK_SAMPLES:
+            # Take the most recent 3 seconds
+            chunk = np.array(buf[-CHUNK_SAMPLES:], dtype=np.float32)
+        else:
+            # Pad with silence on the left
+            chunk = np.zeros(CHUNK_SAMPLES, dtype=np.float32)
+            if buf:
+                chunk[-len(buf):] = np.array(buf, dtype=np.float32)
+
+        return chunk
+
+    def stop(self):
+        """Stop and release microphone stream."""
+        if self._stream:
             self._stream.stop()
             self._stream.close()
             self._stream = None
-            logger.info("AudioRecorder stopped.")
+        self._active = False
+
+    @property
+    def is_active(self) -> bool:
+        return self._active

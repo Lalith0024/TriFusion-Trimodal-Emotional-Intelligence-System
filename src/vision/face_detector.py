@@ -34,10 +34,14 @@ class FaceDetector:
                 min_detection_confidence=min_detection_confidence
             )
             self.active = True
-        except (AttributeError, ImportError):
-            logger.warning("MediaPipe legacy solutions API not available on this platform. Face detection disabled.")
+            logger.info("MediaPipe face detection initialised.")
+        except (AttributeError, ImportError, Exception):
+            logger.warning("MediaPipe legacy solutions not available. Falling back to OpenCV Haar Cascades.")
             self.active = False
             self.detector = None
+            # Load OpenCV's built-in Haar Cascade detector
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            self.face_cascade = cv2.CascadeClassifier(cascade_path)
 
     def detect_and_crop(
         self,
@@ -59,13 +63,31 @@ class FaceDetector:
             bbox_info:    dict with keys x, y, w, h, confidence
         """
         if not self.active or self.detector is None:
-            # Fallback: return center-crop of the frame if detector is inactive
-            h, w = frame.shape[:2]
-            size = min(h, w)
-            x, y = (w - size) // 2, (h - size) // 2
-            face_crop = frame[y : y + size, x : x + size]
+            # Fallback: Use OpenCV Haar Cascades
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
+            
+            if len(faces) == 0:
+                return None, None
+                
+            # Pick largest face
+            (fx, fy, fw, fh) = max(faces, key=lambda f: f[2] * f[3])
+            
+            # Add padding
+            px = int(fw * padding)
+            py = int(fh * padding)
+            
+            x, y = max(0, fx - px), max(0, fy - py)
+            w_pad, h_pad = fw + 2 * px, fh + 2 * py
+            
+            h_img, w_img = frame.shape[:2]
+            w_pad = min(w_pad, w_img - x)
+            h_pad = min(h_pad, h_img - y)
+            
+            face_crop = frame[y : y + h_pad, x : x + w_pad]
             face_resized = cv2.resize(face_crop, (target_size, target_size))
-            return face_resized, {"x": x, "y": y, "w": size, "h": size, "confidence": 0.0}
+            
+            return face_resized, {"x": x, "y": y, "w": w_pad, "h": h_pad, "confidence": 0.8}
 
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.detector.process(rgb_frame)

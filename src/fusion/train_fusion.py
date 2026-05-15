@@ -133,7 +133,12 @@ def train():
     batch_size = cfg.get("batch_size", 256)
     lr         = cfg.get("lr",         0.001)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     logger.info(f"Training FusionMLP on: {device}")
 
     # ── Dataset ──────────────────────────────────────────────────────────────

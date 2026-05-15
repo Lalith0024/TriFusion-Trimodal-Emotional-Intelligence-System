@@ -25,6 +25,7 @@ from sklearn.metrics import classification_report, f1_score
 from src.vision.emotion_model import FacialEmotionNet, get_transforms
 import yaml
 import logging
+from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,7 +48,12 @@ def train():
     with open("config/config.yaml") as f:
         cfg = yaml.safe_load(f)["training"]["vision"]
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     logger.info(f"Training device: {device}")
 
     # ------------------------------------------------------------------ data
@@ -69,9 +75,10 @@ def train():
         generator=torch.Generator().manual_seed(42)
     )
 
-    train_loader = DataLoader(train_ds,    batch_size=cfg["batch_size"], shuffle=True,  num_workers=4, pin_memory=True)
-    val_loader   = DataLoader(val_ds,      batch_size=cfg["batch_size"], shuffle=False, num_workers=4, pin_memory=True)
-    test_loader  = DataLoader(test_dataset,batch_size=cfg["batch_size"], shuffle=False, num_workers=4, pin_memory=True)
+    # num_workers=0 is safer on macOS to prevent multiprocessing hangs
+    train_loader = DataLoader(train_ds,    batch_size=cfg["batch_size"], shuffle=True,  num_workers=0)
+    val_loader   = DataLoader(val_ds,      batch_size=cfg["batch_size"], shuffle=False, num_workers=0)
+    test_loader  = DataLoader(test_dataset,batch_size=cfg["batch_size"], shuffle=False, num_workers=0)
 
     logger.info(f"Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_dataset)}")
     logger.info(f"Classes: {train_dataset.classes}")
@@ -94,15 +101,17 @@ def train():
         model.train()
         running_loss = 0.0
 
-        for images, labels in train_loader:
+        # Wrap train_loader with tqdm for a visible progress bar
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg['epochs']}", leave=False)
+        for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
             loss = criterion(model(images), labels)
             loss.backward()
-            # Gradient clipping prevents exploding gradients on small batches
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             running_loss += loss.item()
+            progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         # ------------------------------------------------------ validation
         model.eval()
