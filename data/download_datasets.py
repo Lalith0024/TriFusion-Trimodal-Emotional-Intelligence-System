@@ -51,8 +51,8 @@ def download_fer2013():
         from PIL import Image
         import numpy as np
 
-        # competition_datasets/fer2013 is the canonical HF Hub version
-        ds = load_dataset("competition_datasets/fer2013")
+        # msambare/fer2013 is a popular, public version on HF Hub
+        ds = load_dataset("msambare/fer2013")
 
         label_names = ["angry", "disgusted", "fearful", "happy", "sad", "surprised", "neutral"]
 
@@ -83,9 +83,46 @@ def download_fer2013():
 
     except Exception as e:
         logger.error(f"FER2013 HuggingFace download failed: {e}")
-        logger.info("Fallback option A: kaggle datasets download -d msambare/fer2013 -p data/raw/")
-        logger.info("Fallback option B: download from https://www.kaggle.com/datasets/msambare/fer2013")
-        logger.info("  Extract so that data/raw/fer2013/train/{emotion}/ folders exist.")
+        logger.info("Trying kagglehub fallback (requires ~/.kaggle/kaggle.json)...")
+        # Programmatic Kaggle fallback (requires kaggle API key in ~/.kaggle/kaggle.json)
+        try:
+            import kagglehub
+            logger.info("Trying kagglehub fallback...")
+            path = kagglehub.dataset_download("msambare/fer2013")
+            # kagglehub downloads to a cache dir — copy to our expected location
+            import shutil
+            if os.path.exists(fer_dir):
+                shutil.rmtree(fer_dir)
+            logger.info("Kaggle download complete! Now copying 35,000+ images to data/raw/fer2013...")
+            logger.info("This might take a minute. PLEASE DO NOT PRESS CTRL+C!")
+            shutil.copytree(path, str(fer_dir), dirs_exist_ok=True)
+            logger.info(f"✓ FER2013 ready at {fer_dir}")
+        except Exception as ke:
+            logger.error(f"kagglehub also failed: {ke}")
+            logger.info("Trying direct download from stable mirror...")
+            try:
+                import urllib.request
+                # Direct link to a zip mirror of FER2013
+                url = "https://github.com/git-disl/FER2013-Dataset/raw/master/fer2013.zip"
+                zip_path = RAW / "fer2013.zip"
+                
+                def _progress(block_num, block_size, total_size):
+                    downloaded = block_num * block_size
+                    if total_size > 0:
+                        pct = min(downloaded / total_size * 100, 100)
+                        print(f"\r  Progress: {pct:5.1f}%", end="", flush=True)
+
+                urllib.request.urlretrieve(url, zip_path, reporthook=_progress)
+                print()
+                
+                with zipfile.ZipFile(zip_path, "r") as z:
+                    z.extractall(fer_dir)
+                zip_path.unlink()
+                logger.info(f"✓ FER2013 ready at {fer_dir}")
+            except Exception as de:
+                logger.error(f"Direct download also failed: {de}")
+                logger.info("MANUAL STEP REQUIRED: Download FER2013 from kaggle.com/datasets/msambare/fer2013")
+                logger.info("Extract so: data/raw/fer2013/train/angry/*.png etc exist")
 
 
 # ── RAVDESS ──────────────────────────────────────────────────────────────────

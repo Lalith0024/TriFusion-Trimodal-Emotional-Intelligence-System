@@ -2,43 +2,45 @@
 __pycache__/
 *.py[cod]
 *.pyo
-*.pyd
-.Python
-env/
+.env
 venv/
 .venv/
 *.egg-info/
 dist/
 build/
-*.egg
 
-# Environment
-.env
-*.env.local
-.gemini/
-# Model weights (large binary files — store on HuggingFace or GDrive)
+# Data — never commit raw datasets (too large)
+data/raw/
+data/processed/
+
+# Model weights — never commit trained weights to git
 models/vision/*.pth
 models/audio/wav2vec2_ravdess/
 models/text/roberta_goemotions/
 models/fusion/*.pth
 
-# Data (download via script)
-data/raw/
-data/processed/
+# Keep .gitkeep files so folder structure is preserved
+!models/vision/.gitkeep
+!models/audio/.gitkeep
+!models/text/.gitkeep
+!models/fusion/.gitkeep
 
-# Jupyter / IDE
-.ipynb_checkpoints/
-*.ipynb
-.idea/
-.vscode/
-*.DS_Store
-
-# Streamlit cache
+# Streamlit
 .streamlit/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Redis
+dump.rdb
 
 # Logs
 *.log
-logs/
 
-# Redis dump
-dump.rdb
+# Gemini AI assistant cache
+.gemini/
