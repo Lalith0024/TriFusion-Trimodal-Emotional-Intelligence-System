@@ -30,8 +30,7 @@ Interpretation:
   0.7 – 1.0 → High         (likely masking — WellnessAgent escalates)
 """
 
-import torch
-import torch.nn.functional as F
+import numpy as np
 from typing import Dict, Tuple
 from config.emotions import UNIFIED_EMOTIONS
 
@@ -39,20 +38,19 @@ from config.emotions import UNIFIED_EMOTIONS
 _MAX_KL_8CLASS = 2.08
 
 
-def _symmetric_kl(p: torch.Tensor, q: torch.Tensor) -> float:
+def _symmetric_kl(p: np.ndarray, q: np.ndarray) -> float:
     """
     Symmetric KL divergence: [KL(P||Q) + KL(Q||P)] / 2.
 
     Args:
-        p, q: Probability tensors of same shape. Must sum to 1 and be > 0.
+        p, q: Probability arrays of same shape. Must sum to 1 and be > 0.
 
     Returns:
         Scalar float.
     """
-    # F.kl_div expects log-probabilities as first arg and probabilities as second
-    kl_pq = F.kl_div(q.log(), p, reduction="sum")  # KL(P || Q)
-    kl_qp = F.kl_div(p.log(), q, reduction="sum")  # KL(Q || P)
-    return ((kl_pq + kl_qp) / 2.0).item()
+    kl_pq = np.sum(p * np.log(p / q))  # KL(P || Q)
+    kl_qp = np.sum(q * np.log(q / p))  # KL(Q || P)
+    return float((kl_pq + kl_qp) / 2.0)
 
 
 def compute_incongruence(
@@ -74,17 +72,17 @@ def compute_incongruence(
     """
     eps = 1e-8  # small floor to avoid log(0)
 
-    def to_tensor(d: Dict[str, float]) -> torch.Tensor:
-        """Convert prob dict → float32 tensor ordered by UNIFIED_EMOTIONS."""
-        t = torch.tensor(
-            [d.get(e, eps) for e in UNIFIED_EMOTIONS], dtype=torch.float32
+    def to_array(d: Dict[str, float]) -> np.ndarray:
+        """Convert prob dict → float32 array ordered by UNIFIED_EMOTIONS."""
+        arr = np.array(
+            [d.get(e, eps) for e in UNIFIED_EMOTIONS], dtype=np.float32
         )
-        t = t + eps                  # ensure strictly positive
-        return t / t.sum()           # normalise to sum-1
+        arr = arr + eps              # ensure strictly positive
+        return arr / arr.sum()       # normalise to sum-1
 
-    p_v = to_tensor(vision_probs)
-    p_a = to_tensor(audio_probs)
-    p_t = to_tensor(text_probs)
+    p_v = to_array(vision_probs)
+    p_a = to_array(audio_probs)
+    p_t = to_array(text_probs)
 
     kl_va = _symmetric_kl(p_v, p_a)
     kl_vt = _symmetric_kl(p_v, p_t)
