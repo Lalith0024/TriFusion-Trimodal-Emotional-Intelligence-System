@@ -9,6 +9,10 @@ Startup behaviour:
   • /health endpoint is mounted at root level for load-balancer checks.
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +27,7 @@ app = FastAPI(
     description=(
         "Trimodal Emotional Intelligence System — real-time emotion detection "
         "and LangGraph-powered wellness interventions."
-    ),
+    ), 
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -46,3 +50,8 @@ app.include_router(router, prefix="/api/v1", tags=["TriFusion"])
 def health_check():
     """Root-level health endpoint for Docker / load-balancer liveness probes."""
     return {"status": "healthy", "service": "trifusion", "version": "1.0.0"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)
+
