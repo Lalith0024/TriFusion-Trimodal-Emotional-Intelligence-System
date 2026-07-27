@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 # Set False ONLY after running all four training scripts successfully.
 # Set True ONLY for UI development without model weights
 # Set False when models/ folders contain trained checkpoints
-SIMULATION_MODE = True
+import os
+IS_CLOUD = "STREAMLIT_SERVER_PORT" in os.environ or os.path.exists("/home/appuser")
+SIMULATION_MODE = os.environ.get("SIMULATION_MODE", str(IS_CLOUD)).lower() in ("true", "1", "t")
 
 
 class PipelineManager:
