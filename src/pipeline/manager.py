@@ -118,26 +118,6 @@ class PipelineManager:
             self._display_frame = None
 
     def _capture_loop(self):
-        if SIMULATION_MODE:
-            logger.info("Simulation mode: generating blank frames.")
-            while self.running:
-                blank = np.zeros((480, 640, 3), dtype=np.uint8)
-                msg = "Demo Mode" if not _missing_cps else "Demo Mode (Missing Checkpoints)"
-                cv2.putText(blank, msg, (160, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 120), 2)
-                if _missing_cps:
-                    cv2.putText(blank, "Run train scripts & restart.", (120, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (60, 60, 100), 1)
-                
-                rgb = cv2.cvtColor(blank, cv2.COLOR_BGR2RGB)
-                with self._display_lock:
-                    self._display_frame = rgb
-                time.sleep(1/30.0)
-                
-                self._fps_lock.acquire()
-                self._frame_count += 1
-                self._fps = 30.0
-                self._fps_lock.release()
-            return
-
         import platform
         if platform.system() == "Darwin":
             cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
@@ -151,14 +131,27 @@ class PipelineManager:
             logger.warning("No camera found — using blank placeholder frame.")
             while self.running:
                 blank = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(blank, "No camera detected", (160, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 120), 2)
+                msg = "No camera detected"
+                if SIMULATION_MODE:
+                    msg = "Demo Mode" if not _missing_cps else "Demo Mode (Missing Checkpoints)"
+                cv2.putText(blank, msg, (160, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 120), 2)
+                if _missing_cps and SIMULATION_MODE:
+                    cv2.putText(blank, "Run train scripts & restart.", (120, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (60, 60, 100), 1)
+                
                 rgb = cv2.cvtColor(blank, cv2.COLOR_BGR2RGB)
                 with self._display_lock:
                     self._display_frame = rgb
                 self._put_latest(self._frame_q, blank)
                 time.sleep(0.1)
+                
+                if SIMULATION_MODE:
+                    self._fps_lock.acquire()
+                    self._frame_count += 1
+                    self._fps = 30.0
+                    self._fps_lock.release()
             return
 
+        # Camera successfully opened
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
