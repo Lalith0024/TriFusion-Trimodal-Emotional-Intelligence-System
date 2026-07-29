@@ -1,6 +1,2 @@
-libgl1
-libglib2.0-0
 libportaudio2
-ffmpeg
-
 libsndfile1
