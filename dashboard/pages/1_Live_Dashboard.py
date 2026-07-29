@@ -187,24 +187,18 @@ def _render_idle_badge(ph, icon, label):
     """, unsafe_allow_html=True)
 
 
-# Render initial idle state
-_render_idle_camera()
-_render_idle_fused()
-_render_idle_badge(face_ph,  "👁", "FACE")
-_render_idle_badge(voice_ph, "🎤", "VOICE")
-_render_idle_badge(text_ph,  "💬", "TEXT")
-agent_ph.markdown(f"""
-<div class="agent-response">
-    {st.session_state.last_agent_resp}
-</div>
-""", unsafe_allow_html=True)
-
-# Initialize unused placeholders outside fragment to prevent StreamlitAPIException
-fps_badge_ph.markdown("<div></div>", unsafe_allow_html=True)
-timer_ph.markdown("<div></div>", unsafe_allow_html=True)
-radar_ph.markdown("<div></div>", unsafe_allow_html=True)
-inc_ph.markdown("<div></div>", unsafe_allow_html=True)
-timeline_ph.markdown("<div></div>", unsafe_allow_html=True)
+# Claim all placeholders outside fragment to prevent StreamlitAPIException
+webcam_ph.empty()
+fused_card_ph.empty()
+face_ph.empty()
+voice_ph.empty()
+text_ph.empty()
+agent_ph.empty()
+fps_badge_ph.empty()
+timer_ph.empty()
+radar_ph.empty()
+inc_ph.empty()
+timeline_ph.empty()
 
 
 # ── FRAGMENT: refreshes at up to 60 Hz for smooth UI ─────────────────────────
@@ -214,12 +208,21 @@ def sync_dashboard():
     """Reads latest data from the background pipeline and updates all UI placeholders."""
 
     if not st.session_state.session_running:
-        # Not running — just persist last agent response
+        # Not running — draw idle states and persist last agent response
+        _render_idle_camera()
+        _render_idle_fused()
+        _render_idle_badge(face_ph,  "👁", "FACE")
+        _render_idle_badge(voice_ph, "🎤", "VOICE")
+        _render_idle_badge(text_ph,  "💬", "TEXT")
+        
         agent_ph.markdown(f"""
         <div class="agent-response">{st.session_state.last_agent_resp}</div>
         """, unsafe_allow_html=True)
         fps_badge_ph.empty()
         timer_ph.empty()
+        radar_ph.empty()
+        inc_ph.empty()
+        timeline_ph.empty()
         return
 
     # ── Read latest results from pipeline threads ─────────────────────────────
