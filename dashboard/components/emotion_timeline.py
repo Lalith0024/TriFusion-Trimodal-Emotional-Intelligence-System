@@ -98,7 +98,7 @@ def render_emotion_timeline(
         height=height
     )
 
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=key)
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=key)
 
 
 def render_incongruence_timeline(
@@ -153,4 +153,4 @@ def render_incongruence_timeline(
         height=height
     )
 
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=key)
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=key)

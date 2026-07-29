@@ -191,7 +191,7 @@ tech_data = {
                          "GoEmotions (58K comments)", "Synthetic (8K samples, 30% incongruent)",
                          "LLM inference via Groq API", "—", "—"]
 }
-st.dataframe(pd.DataFrame(tech_data), hide_index=True, use_container_width=True)
+st.dataframe(pd.DataFrame(tech_data), hide_index=True, width="stretch")
 
 st.markdown("---")
 st.markdown("""

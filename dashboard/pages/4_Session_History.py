@@ -115,7 +115,7 @@ fig_conf.update_layout(
     yaxis=dict(range=[0, 1], showgrid=True, gridcolor="#1a1a24",
                tickfont=dict(color="#64748b", size=9), tickformat=".0%"),
 )
-st.plotly_chart(fig_conf, use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(fig_conf, width="stretch", config={"displayModeBar": False})
 
 # ── Incongruence over time with threshold bands ────────────────────────────────
 st.markdown("### 🔀 Incongruence Score Over Time")
@@ -143,7 +143,7 @@ fig_inc.update_layout(
     yaxis=dict(range=[0, 1], showgrid=True, gridcolor="#1a1a24",
                tickfont=dict(color="#64748b", size=9), tickformat=".0%"),
 )
-st.plotly_chart(fig_inc, use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(fig_inc, width="stretch", config={"displayModeBar": False})
 
 # ── Dominant emotion distribution ──────────────────────────────────────────────
 st.markdown("### 🥧 Dominant Emotion Distribution")
@@ -171,7 +171,7 @@ fig_pie.update_layout(
     legend=dict(font=dict(color="#94a3b8", size=11), bgcolor="rgba(0,0,0,0)"),
     showlegend=True,
 )
-st.plotly_chart(fig_pie, use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(fig_pie, width="stretch", config={"displayModeBar": False})
 
 st.markdown("---")
 
@@ -187,7 +187,7 @@ with st.expander("📋 Raw Timeline Data"):
         "Fusion Conf":  f"{d['fusion']:.1%}",
         "Incongruence": f"{d['inc']:.2f}",
     } for d in tl])
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 # ── Export session ─────────────────────────────────────────────────────────────
 col_export, _ = st.columns([2, 5])
@@ -198,5 +198,5 @@ with col_export:
         data=json_bytes,
         file_name="trifusion_session.json",
         mime="application/json",
-        use_container_width=True,
+        width="stretch",
     )

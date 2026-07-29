@@ -200,11 +200,11 @@ agent_ph.markdown(f"""
 """, unsafe_allow_html=True)
 
 # Initialize unused placeholders outside fragment to prevent StreamlitAPIException
-fps_badge_ph.empty()
-timer_ph.empty()
-radar_ph.empty()
-inc_ph.empty()
-timeline_ph.empty()
+fps_badge_ph.markdown("<div></div>", unsafe_allow_html=True)
+timer_ph.markdown("<div></div>", unsafe_allow_html=True)
+radar_ph.markdown("<div></div>", unsafe_allow_html=True)
+inc_ph.markdown("<div></div>", unsafe_allow_html=True)
+timeline_ph.markdown("<div></div>", unsafe_allow_html=True)
 
 
 # ── FRAGMENT: refreshes at up to 60 Hz for smooth UI ─────────────────────────
