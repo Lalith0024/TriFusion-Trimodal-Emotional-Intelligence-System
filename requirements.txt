@@ -10,7 +10,8 @@ sounddevice>=0.4.6
 librosa>=0.10.1
 openai-whisper
 mediapipe>=0.10.11
-opencv-python-headless>=4.9.0.80
+opencv-python-headless==4.10.0.84
+opencv-contrib-python-headless==4.10.0.84
 Pillow>=10.3.0
 numpy>=1.26.4
 pandas>=2.0.0
