@@ -36,20 +36,44 @@ class TextInference:
         else:
             self.device = torch.device("cpu")
 
-        model_src = (
+        fallback_model = "roberta-base"
+
+        is_valid_local = (
             model_path
-            if (model_path and os.path.exists(model_path))
-            else "roberta-base"
+            and os.path.exists(model_path)
+            and os.path.isdir(model_path)
+            and os.path.exists(os.path.join(model_path, "config.json"))
+            and (
+                os.path.exists(os.path.join(model_path, "model.safetensors"))
+                or os.path.exists(os.path.join(model_path, "pytorch_model.bin"))
+            )
         )
+        model_src = model_path if is_valid_local else fallback_model
+
         logger.info(f"Loading text model from: {model_src}")
 
-        self.tokenizer = RobertaTokenizerFast.from_pretrained(model_src)
-        self.model     = RobertaForSequenceClassification.from_pretrained(
-            model_src,
-            num_labels=len(UNIFIED_EMOTIONS),
-            ignore_mismatched_sizes=True
-        ).to(self.device)
+        try:
+            self.tokenizer = RobertaTokenizerFast.from_pretrained(model_src)
+        except Exception as e:
+            logger.warning(f"Failed to load text tokenizer from {model_src} ({e}). Falling back to {fallback_model}.")
+            self.tokenizer = RobertaTokenizerFast.from_pretrained(fallback_model)
+
+        try:
+            self.model = RobertaForSequenceClassification.from_pretrained(
+                model_src,
+                num_labels=len(UNIFIED_EMOTIONS),
+                ignore_mismatched_sizes=True
+            ).to(self.device)
+        except Exception as e:
+            logger.warning(f"Failed to load text model from {model_src} ({e}). Falling back to {fallback_model}.")
+            self.model = RobertaForSequenceClassification.from_pretrained(
+                fallback_model,
+                num_labels=len(UNIFIED_EMOTIONS),
+                ignore_mismatched_sizes=True
+            ).to(self.device)
+
         self.model.eval()
+
 
     def predict(self, text: str) -> dict:
         """
@@ -83,7 +107,7 @@ class TextInference:
             padding=True
         ).to(self.device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             logits = self.model(**inputs).logits
             probs  = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
 

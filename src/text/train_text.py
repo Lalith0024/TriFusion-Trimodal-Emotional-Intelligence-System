@@ -28,6 +28,10 @@ Prerequisites:
 
 import os
 import sys
+
+# Add project root to python path to resolve 'config' and 'src' modules
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import numpy as np
 import torch
 from transformers import (
@@ -172,7 +176,7 @@ def train():
         args=training_args,
         train_dataset=dataset["train"],
         eval_dataset=dataset["validation"],
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=collator,
         compute_metrics=compute_metrics,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],

@@ -45,13 +45,36 @@ app.add_middleware(
 # Mount versioned routes
 app.include_router(router, prefix="/api/v1", tags=["TriFusion"])
 
+@app.on_event("startup")
+def check_resources():
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        gb = mem.available / (1024 ** 3)
+        if gb < 2.0:
+            logging.error(f"Insufficient RAM: {gb:.2f}GB available. TriFusion requires at least 2GB free. Forcing SIMULATION_MODE.")
+            os.environ["SIMULATION_MODE"] = "true"
+    except ImportError:
+        pass
+
 
 @app.get("/health", tags=["System"])
 def health_check():
     """Root-level health endpoint for Docker / load-balancer liveness probes."""
-    return {"status": "healthy", "service": "trifusion", "version": "1.0.0"}
+    from src.pipeline.startup_validator import validate_checkpoints
+    
+    checkpoints_ok, missing = validate_checkpoints()
+    simulation_mode = os.environ.get("SIMULATION_MODE", str("STREAMLIT_SERVER_PORT" in os.environ)).lower() in ("true", "1", "t")
+    
+    return {
+        "status": "healthy" if checkpoints_ok or simulation_mode else "degraded",
+        "service": "trifusion",
+        "version": "1.0.0",
+        "checkpoints_loaded": checkpoints_ok,
+        "missing_checkpoints": missing,
+        "simulation_mode": simulation_mode
+    }
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)
-

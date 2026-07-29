@@ -50,7 +50,7 @@ class VisionInference:
             self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
-        self.model = FacialEmotionNet(pretrained=False).to(self.device)
+        self.model = FacialEmotionNet(pretrained=True).to(self.device)
 
         if model_path and os.path.exists(model_path):
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))
@@ -94,7 +94,7 @@ class VisionInference:
         face_pil = Image.fromarray(face_rgb)
         tensor   = _TRANSFORM(face_pil).unsqueeze(0).to(self.device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             probs = self.model.get_probabilities(tensor).squeeze().cpu().numpy()
 
         # Map FER2013 7-class → unified 8-class

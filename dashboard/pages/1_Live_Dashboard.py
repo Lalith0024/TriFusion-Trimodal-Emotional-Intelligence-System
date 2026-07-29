@@ -52,11 +52,12 @@ def _color(emotion: str) -> str:
 
 # ── Singleton pipeline — one per Streamlit session ───────────────────────────
 if "pipeline" not in st.session_state:
-    st.session_state.pipeline        = PipelineManager()
-    st.session_state.session_running = False
-    st.session_state.start_time      = None
-    st.session_state.last_agent_resp = "Ready to analyze. Click ▶ Start Session."
-    st.session_state.timeline_data   = []     # list of dicts for timeline chart
+    with st.spinner("🧠 Loading Trimodal Neural Networks (Vision, Audio, Text)... this takes ~30 seconds on first load."):
+        st.session_state.pipeline        = PipelineManager()
+        st.session_state.session_running = False
+        st.session_state.start_time      = None
+        st.session_state.last_agent_resp = "Ready to analyze. Click ▶ Start Session."
+        st.session_state.timeline_data   = []     # list of dicts for timeline chart
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -66,16 +67,18 @@ render_sidebar()
 st.markdown("## 🎥 Live Dashboard")
 st.markdown("*Real-time trimodal emotional analysis — Face · Voice · Words*")
 
-st.markdown("""
-<div style="background:#1a0f00; border-left:4px solid #f59e0b; padding:0.55rem 1rem;
-            border-radius:6px; margin-bottom:1.2rem;">
-  <span style="color:#fbbf24; font-size:0.82rem; font-weight:600;">⚠ Beta</span>
-  <span style="color:#fcd34d; font-size:0.78rem; margin-left:6px;">
-    Hardware capture requires a local environment with a connected webcam.
-    Audio and text channels use placeholder inputs until mic recorder is wired.
-  </span>
-</div>
-""", unsafe_allow_html=True)
+import os
+_is_simulation = os.environ.get("SIMULATION_MODE", "false").lower() in ("true", "1", "t")
+if _is_simulation:
+    st.markdown("""
+    <div style="background:#1a1025; border-left:4px solid #a855f7; padding:0.55rem 1rem;
+                border-radius:6px; margin-bottom:1.2rem;">
+      <span style="color:#d8b4fe; font-size:0.82rem; font-weight:600;">✨ Simulation Mode Active</span>
+      <span style="color:#e9d5ff; font-size:0.78rem; margin-left:6px;">
+        Running on synthetic data (no camera/mic access required). Perfect for testing and cloud deployment.
+      </span>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ── Two-column layout ─────────────────────────────────────────────────────────
 col_left, col_right = st.columns([3, 2], gap="large")
@@ -197,9 +200,10 @@ agent_ph.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# ── FRAGMENT: refreshes at 30 Hz for smooth UI ───────────────────────────────
-@st.fragment(run_every=0.033)
+# ── FRAGMENT: refreshes at up to 60 Hz for smooth UI ─────────────────────────
+@st.fragment(run_every=0.016)
 def sync_dashboard():
+
     """Reads latest data from the background pipeline and updates all UI placeholders."""
 
     if not st.session_state.session_running:
@@ -312,19 +316,27 @@ def sync_dashboard():
     _badge(voice_ph, "🎤", "VOICE", a_res, "calibrating")
     _badge(text_ph,  "💬", "TEXT",  t_res, "listening")
 
-    # ── 5. Radar chart ────────────────────────────────────────────────────────
-    if v_res and a_res and t_res:
-        with radar_ph:
-            render_radar_chart({
-                "FACE":  v_res.get("probabilities", {}),
-                "VOICE": a_res.get("probabilities", {}),
-                "TEXT":  t_res.get("probabilities", {}),
-            }, key="live_radar")
+    # ── 5. Throttled Plotly Chart Updates (keeps webcam feed running at full FPS) ──
+    now_ts = time.time()
+    last_chart_ts = st.session_state.get("_last_chart_ts", 0.0)
+    should_update_charts = (now_ts - last_chart_ts) >= 0.15
 
-    # ── 6. Incongruence meter ─────────────────────────────────────────────────
-    if f_res:
-        with inc_ph:
-            render_incongruence_meter(f_res.get("incongruence_score", 0.0))
+    if should_update_charts:
+        st.session_state._last_chart_ts = now_ts
+
+        # ── Radar chart ──
+        if v_res and a_res and t_res:
+            with radar_ph:
+                render_radar_chart({
+                    "FACE":  v_res.get("probabilities", {}),
+                    "VOICE": a_res.get("probabilities", {}),
+                    "TEXT":  t_res.get("probabilities", {}),
+                }, key="live_radar")
+
+        # ── Incongruence meter ──
+        if f_res:
+            with inc_ph:
+                render_incongruence_meter(f_res.get("incongruence_score", 0.0))
 
     # ── 7. WellnessAgent response ─────────────────────────────────────────────
     resp = data.get("agent_response", st.session_state.last_agent_resp)
@@ -357,9 +369,9 @@ def sync_dashboard():
             }
             st.session_state.timeline_data = tl[-120:] + [entry]  # keep last 120s
 
-    # Draw the timeline
+    # Draw the timeline (throttled)
     tl = st.session_state.timeline_data
-    if len(tl) >= 2:
+    if should_update_charts and len(tl) >= 2:
         import plotly.graph_objects as go
         times   = [d["time"]  for d in tl]
         fig = go.Figure()
@@ -400,6 +412,7 @@ def sync_dashboard():
             ),
         )
         timeline_ph.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
 
 
 # Run the auto-refreshing fragment

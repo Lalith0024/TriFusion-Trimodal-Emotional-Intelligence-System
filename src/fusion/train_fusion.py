@@ -32,6 +32,10 @@ Usage:
 
 import os
 import sys
+
+# Add project root to python path to resolve 'config' and 'src' modules
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -162,7 +166,7 @@ def train():
 
     # Reduce LR when validation F1 stagnates — more adaptive than step LR
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=10, factor=0.5, verbose=True
+        optimizer, mode="max", patience=10, factor=0.5
     )
 
     os.makedirs("models/fusion", exist_ok=True)

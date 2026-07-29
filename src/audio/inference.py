@@ -39,16 +39,66 @@ class AudioInference:
             self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
-        model_src      = model_path if (model_path and os.path.exists(model_path)) else "facebook/wav2vec2-base"
+        fallback_model = "facebook/wav2vec2-base"
 
-        logger.info(f"Loading audio model from: {model_src}")
-        self.processor = Wav2Vec2Processor.from_pretrained(model_src)
-        self.model     = Wav2Vec2ForSequenceClassification.from_pretrained(
-            model_src,
-            num_labels=len(RAVDESS_LABELS),
-            ignore_mismatched_sizes=True   # safe even if loading fine-tuned ckpt
-        ).to(self.device)
+        # Resolve relative model_path to absolute path relative to project root
+        target_path = model_path
+        if model_path and not os.path.isabs(model_path):
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            target_path = os.path.join(project_root, model_path)
+
+        # Check if local model directory is complete (must have config + weights)
+        is_valid_local = (
+            target_path
+            and os.path.exists(target_path)
+            and os.path.isdir(target_path)
+            and (
+                os.path.exists(os.path.join(target_path, "preprocessor_config.json"))
+                or os.path.exists(os.path.join(target_path, "processor_config.json"))
+                or os.path.exists(os.path.join(target_path, "config.json"))
+            )
+            and (
+                os.path.exists(os.path.join(target_path, "model.safetensors"))
+                or os.path.exists(os.path.join(target_path, "pytorch_model.bin"))
+            )
+        )
+
+
+
+        model_src = target_path if is_valid_local else fallback_model
+        logger.info(f"Loading audio model from: {model_src} (absolute path: {os.path.abspath(model_src)})")
+
+        # Load processor (auto-populating target_path if local directory was missing files)
+        try:
+            self.processor = Wav2Vec2Processor.from_pretrained(model_src)
+        except Exception as e:
+            logger.warning(f"Failed to load processor from {model_src} ({e}). Falling back to {fallback_model}.")
+            self.processor = Wav2Vec2Processor.from_pretrained(fallback_model)
+            if target_path and os.path.isdir(target_path):
+                try:
+                    self.processor.save_pretrained(target_path)
+                    logger.info(f"Auto-populated preprocessor_config.json in {target_path}")
+                except Exception as save_err:
+                    logger.debug(f"Could not auto-save processor: {save_err}")
+
+        # Load model (auto-populating target_path if local directory was missing files)
+        try:
+            self.model = Wav2Vec2ForSequenceClassification.from_pretrained(
+                model_src,
+                num_labels=len(RAVDESS_LABELS),
+                ignore_mismatched_sizes=True
+            ).to(self.device)
+        except Exception as e:
+            logger.warning(f"Failed to load model from {model_src} ({e}). Falling back to {fallback_model}.")
+            self.model = Wav2Vec2ForSequenceClassification.from_pretrained(
+                fallback_model,
+                num_labels=len(RAVDESS_LABELS),
+                ignore_mismatched_sizes=True
+            ).to(self.device)
+
         self.model.eval()
+
+
 
     def predict(self, waveform: np.ndarray, sample_rate: int = 16000) -> dict:
         """
@@ -73,7 +123,7 @@ class AudioInference:
             padding=True
         ).to(self.device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             logits = self.model(**inputs).logits
             probs  = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
 

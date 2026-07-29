@@ -103,7 +103,7 @@ TriFusion is a comprehensive, production-style emotional intelligence system bui
 
 | Component | Technology | Version |
 | :--- | :--- | :--- |
-| **Language** | Python | 3.14+ |
+| **Language** | Python | 3.10+ |
 | **Vision Model** | EfficientNet-B0 | 2.2.0 |
 | **Audio Model** | Wav2Vec2-Base | 4.38.0 |
 | **Text Model** | RoBERTa-Base | 4.38.0 |
@@ -121,7 +121,7 @@ TriFusion is a comprehensive, production-style emotional intelligence system bui
 ## 📦 Installation
 
 ### Prerequisites
-- Python 3.14+
+- Python 3.10+
 - Webcam and Microphone (for Live mode)
 - Internet connection (for model downloads)
 
@@ -155,7 +155,7 @@ python3 tests/test_audio.py
 2. **Set API Keys:** Create `.env` and add `GROQ_API_KEY=...`
 3. **Launch Backend:** `python3 src/api/main.py`
 4. **Launch Dashboard:** `streamlit run dashboard/app.py`
-5. **Analyze:** Open `http://localhost:9002` and start a session.
+5. **Analyze:** Open `http://localhost:8501` and start a session.
 
 ---
 

@@ -94,7 +94,7 @@ class FusionInference:
         a_tensor = self._probs_to_tensor(a_probs, UNIFIED_EMOTIONS)
         t_tensor = self._probs_to_tensor(t_probs, UNIFIED_EMOTIONS)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             fused_probs = self.model(v_tensor, a_tensor, t_tensor)  # (1, 8)
         fused_np = fused_probs.squeeze().cpu().numpy()
 

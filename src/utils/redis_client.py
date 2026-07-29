@@ -19,24 +19,33 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-# In-memory fallback storage (used when Redis is unavailable)
-_memory_store: dict = {}
-
+_redis_client_cached = None
+_redis_checked = False
+_memory_store = {}
 
 def _get_redis_client():
     """
-    Attempt to create a Redis client. Returns None if Redis is unavailable.
-    Import is deferred to avoid hard dependency at module load.
+    Attempt to create a Redis client with fast fallback caching.
+    Returns None if Redis is unavailable.
     """
+    global _redis_client_cached, _redis_checked
+    if _redis_checked:
+        return _redis_client_cached
+
     try:
         import redis
-        url    = os.getenv("REDIS_URL", "redis://localhost:6379")
-        client = redis.from_url(url, decode_responses=True, socket_connect_timeout=2)
+        url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        client = redis.from_url(url, decode_responses=True, socket_connect_timeout=0.2)
         client.ping()  # fast connectivity check
-        return client
+        _redis_client_cached = client
     except Exception as e:
-        logger.warning(f"Redis unavailable ({e}) — using in-memory fallback.")
-        return None
+        logger.info(f"Redis unavailable ({e}) — using high-performance in-memory fallback.")
+        _redis_client_cached = None
+    finally:
+        _redis_checked = True
+
+    return _redis_client_cached
+
 
 
 def save_frame(session_id: str, frame_dict: dict, ttl_seconds: int = 3600) -> None:
