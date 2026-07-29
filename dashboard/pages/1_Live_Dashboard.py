@@ -95,21 +95,21 @@ with col_left:
             if st.session_state.get("show_results_popup"):
                 st.success("✅ Session Recorded!")
                 c1, c2 = st.columns(2)
-                if c1.button("📈 View Results", type="primary", use_container_width=True):
+                if c1.button("📈 View Results", type="primary", width="stretch"):
                     st.session_state.show_results_popup = False
                     st.switch_page("pages/4_Session_History.py")
-                if c2.button("Dismiss", use_container_width=True):
+                if c2.button("Dismiss", width="stretch"):
                     st.session_state.show_results_popup = False
                     st.rerun()
             else:
-                if st.button("▶ Start Session", type="primary", use_container_width=True, key="btn_start"):
+                if st.button("▶ Start Session", type="primary", width="stretch", key="btn_start"):
                     st.session_state.pipeline.start()
                     st.session_state.session_running = True
                     st.session_state.start_time      = time.time()
                     st.session_state.timeline_data   = []
                     st.rerun()
         else:
-            if st.button("⏹ Stop Session", use_container_width=True, key="btn_stop"):
+            if st.button("⏹ Stop Session", width="stretch", key="btn_stop"):
                 st.session_state.pipeline.stop()
                 st.session_state.session_running = False
                 st.session_state.show_results_popup = True
@@ -198,6 +198,13 @@ agent_ph.markdown(f"""
     {st.session_state.last_agent_resp}
 </div>
 """, unsafe_allow_html=True)
+
+# Initialize unused placeholders outside fragment to prevent StreamlitAPIException
+fps_badge_ph.empty()
+timer_ph.empty()
+radar_ph.empty()
+inc_ph.empty()
+timeline_ph.empty()
 
 
 # ── FRAGMENT: refreshes at up to 60 Hz for smooth UI ─────────────────────────
@@ -411,7 +418,7 @@ def sync_dashboard():
                 tickformat=".0%",
             ),
         )
-        timeline_ph.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        timeline_ph.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 
