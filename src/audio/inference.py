@@ -39,7 +39,8 @@ class AudioInference:
             self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
-        fallback_model = "ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition"
+        # Use a model strictly compatible with Wav2Vec2ForSequenceClassification
+        fallback_model = "superb/wav2vec2-base-superb-er"
 
         # Resolve relative model_path to absolute path relative to project root
         target_path = model_path
@@ -117,32 +118,32 @@ class AudioInference:
 
         with torch.inference_mode():
             logits = self.model(**inputs).logits
-            probs  = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
-
+        
         # Initialize base probabilities
         probabilities = {label: 0.0 for label in RAVDESS_LABELS}
         num_labels = len(self.model.config.id2label)
 
-        # Check if it's the locally trained model by inspecting the label map order
-        is_local_model = (
-            num_labels == len(RAVDESS_LABELS) 
-            and 0 in self.model.config.id2label 
-            and str(self.model.config.id2label[0]).lower() == RAVDESS_LABELS[0].lower()
-        )
-
-        if is_local_model:
-            # Custom 8-class RAVDESS model (trained locally)
-            for i, label in enumerate(RAVDESS_LABELS):
-                probabilities[label] = float(probs[i] if probs.ndim > 0 else probs)
+        if num_labels == len(RAVDESS_LABELS):
+            # Custom 8-class model (trained locally)
+            probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
+            for i, e in enumerate(RAVDESS_LABELS):
+                probabilities[e] = float(probs[i] if probs.ndim > 0 else probs)
         else:
-            # Community model (e.g. ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition)
+            # Community multi-class model (e.g. superb/wav2vec2-base-superb-er has 4 classes)
+            probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
+            
             for i in range(num_labels):
-                label_str = str(self.model.config.id2label.get(i, "")).lower()
-                # Map to our standard RAVDESS/Unified string
-                if label_str in RAVDESS_LABELS:
-                    probabilities[label_str] += float(probs[i] if probs.ndim > 0 else probs)
-                else:
-                    probabilities["neutral"] += float(probs[i] if probs.ndim > 0 else probs)
+                label_name = self.model.config.id2label.get(i, self.model.config.id2label.get(str(i), ""))
+                label = str(label_name).lower()
+                
+                # superb/wav2vec2-base-superb-er has: neu, hap, ang, sad
+                if label == "neu": label = "neutral"
+                elif label == "hap": label = "happy"
+                elif label == "ang": label = "angry"
+                elif label == "sad": label = "sad"
+                
+                unified = label if label in UNIFIED_EMOTIONS else "neutral"
+                probabilities[unified] += float(probs[i] if probs.ndim > 0 else probs)
 
         dominant = max(probabilities, key=probabilities.get)
 
