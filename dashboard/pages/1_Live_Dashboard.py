@@ -2,19 +2,6 @@
 dashboard/pages/1_Live_Dashboard.py
 ─────────────────────────────────────
 Real-time trimodal emotional intelligence dashboard.
-
-Layout:
-  ┌─────────────────────────────┬─────────────────────────┐
-  │  Camera feed                │  Modality badges (3-col) │
-  │  FPS · Session time         │  Emotion radar chart     │
-  │  Fused state card           │  Incongruence meter      │
-  │  Start / Stop               │  WellnessAgent response  │
-  └─────────────────────────────┴─────────────────────────┘
-  ─── Session emotion timeline ──────────────────────────────
-
-The @st.fragment(run_every=0.1) decorator refreshes the inner UI
-at 10 Hz without triggering a full page re-render, keeping the
-Streamlit experience smooth.
 """
 
 import sys
@@ -34,6 +21,7 @@ from config.emotions                       import UNIFIED_EMOTIONS
 from streamlit_webrtc                      import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
 import numpy as np
+import cv2
 
 load_dotenv()
 
@@ -63,9 +51,8 @@ pipeline = get_pipeline()
 if "session_running" not in st.session_state:
     st.session_state.session_running = False
     st.session_state.start_time      = None
-    st.session_state.last_agent_resp = "Ready to analyze. Click ▶ Start Session."
-    st.session_state.timeline_data   = []     # list of dicts for timeline chart
-
+    st.session_state.last_agent_resp = "Ready to analyze. Click START on the camera."
+    st.session_state.timeline_data   = []
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 render_sidebar()
@@ -74,7 +61,6 @@ render_sidebar()
 st.markdown("## 🎥 Live Dashboard")
 st.markdown("*Real-time trimodal emotional analysis — Face · Voice · Words*")
 
-import os
 _is_simulation = os.environ.get("SIMULATION_MODE", "false").lower() in ("true", "1", "t")
 if _is_simulation:
     st.markdown("""
@@ -87,94 +73,71 @@ if _is_simulation:
     </div>
     """, unsafe_allow_html=True)
 
-# ── FRAGMENT: refreshes at up to 30 Hz for smooth UI ─────────────────────────
-@st.fragment(run_every=0.033)
-def sync_dashboard():
-    """Reads latest data from the background pipeline and renders the entire live dashboard UI."""
-    data    = pipeline.get_latest()
-    v_res   = data.get("vision",  {})
-    a_res   = data.get("audio",   {})
-    t_res   = data.get("text",    {})
-    f_res   = data.get("fusion",  {})
-    fps     = data.get("fps",     0.0)
-    elapsed = time.time() - (st.session_state.start_time or time.time())
+
+col_left, col_right = st.columns([3, 2], gap="large")
+
+with col_left:
+    st.markdown("### 📷 Live Feed")
     
-    # Pre-calculate common variables
-    mins = int(elapsed // 60)
-    secs = int(elapsed % 60)
+    # WebRTC callbacks
+    def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
+        pipeline.feed_video_frame(img)
+        
+        # Draw annotations
+        v = pipeline.get_latest().get("vision", {})
+        if v and v.get("face_detected") and v.get("bbox") and hasattr(pipeline, 'vision_inf'):
+            img = pipeline.vision_inf.face_detector.draw_overlay(
+                img, v["bbox"], v["dominant"], v["confidence"]
+            )
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+    def audio_frame_callback(frame: av.AudioFrame) -> av.AudioFrame:
+        array = frame.to_ndarray()
+        if array.shape[0] > 1: array = array.mean(axis=0)
+        else: array = array[0]
+        pipeline.feed_audio_chunk(array)
+        return frame
+
+    RTC_CONFIGURATION = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+
+    ctx = webrtc_streamer(
+        key="trifusion-webrtc",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
+        video_frame_callback=video_frame_callback,
+        audio_frame_callback=audio_frame_callback,
+        async_processing=True,
+        media_stream_constraints={"video": True, "audio": True},
+    )
     
-    # Update timeline data if running
-    if f_res and st.session_state.session_running:
-        tick = int(elapsed)
-        tl   = st.session_state.timeline_data
-        if not tl or tl[-1].get("tick") != tick:
-            entry = {
-                "tick":    tick,
-                "time":    f"{mins:02d}:{secs:02d}",
-                "face":    v_res.get("confidence", 0.0) if v_res else 0.0,
-                "voice":   a_res.get("confidence", 0.0) if a_res else 0.0,
-                "text":    t_res.get("confidence", 0.0) if t_res else 0.0,
-                "fusion":  f_res.get("confidence", 0.0),
-                "inc":     f_res.get("incongruence_score", 0.0),
-                "emotion": f_res.get("dominant_emotion", "neutral"),
-            }
-            st.session_state.timeline_data = tl[-120:]  # keep last 120s
+    # Sync pipeline state with WebRTC state
+    if ctx.state.playing and not pipeline.running:
+        pipeline.start()
+        st.session_state.session_running = True
+        st.session_state.start_time = time.time()
+        st.session_state.timeline_data = []
+    elif not ctx.state.playing and pipeline.running:
+        pipeline.stop()
+        st.session_state.session_running = False
+        st.session_state.show_results_popup = True
 
-    # ── Two-column layout ─────────────────────────────────────────────────────────
-    col_left, col_right = st.columns([3, 2], gap="large")
+    @st.fragment(run_every=0.5)
+    def sync_left():
+        data    = pipeline.get_latest()
+        v_res   = data.get("vision",  {})
+        a_res   = data.get("audio",   {})
+        t_res   = data.get("text",    {})
+        f_res   = data.get("fusion",  {})
+        fps     = data.get("fps",     0.0)
+        elapsed = time.time() - (st.session_state.start_time or time.time())
+        mins = int(elapsed // 60)
+        secs = int(elapsed % 60)
 
-    with col_left:
-        # ── 1. Camera feed ──
-        st.markdown("### 📷 Live Feed")
-        
-        # WebRTC callbacks
-        def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
-            img = frame.to_ndarray(format="bgr24")
-            img = cv2.flip(img, 1)
-            pipeline.feed_video_frame(img)
-            
-            # Draw annotations
-            v = pipeline.get_latest().get("vision", {})
-            if v and v.get("face_detected") and v.get("bbox") and hasattr(pipeline, 'vision_inf'):
-                img = pipeline.vision_inf.face_detector.draw_overlay(
-                    img, v["bbox"], v["dominant"], v["confidence"]
-                )
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-        def audio_frame_callback(frame: av.AudioFrame) -> av.AudioFrame:
-            array = frame.to_ndarray()
-            if array.shape[0] > 1: array = array.mean(axis=0)
-            else: array = array[0]
-            pipeline.feed_audio_chunk(array)
-            return frame
-
-        # STUN configuration for cloud
-        RTC_CONFIGURATION = RTCConfiguration(
-            {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-        )
-
-        ctx = webrtc_streamer(
-            key="trifusion-webrtc",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTC_CONFIGURATION,
-            video_frame_callback=video_frame_callback,
-            audio_frame_callback=audio_frame_callback,
-            async_processing=True,
-            media_stream_constraints={"video": True, "audio": True},
-        )
-        
-        # Sync pipeline state with WebRTC state
-        if ctx.state.playing and not pipeline.running:
-            pipeline.start()
-            st.session_state.session_running = True
-            st.session_state.start_time = time.time()
-            st.session_state.timeline_data = []
-        elif not ctx.state.playing and pipeline.running:
-            pipeline.stop()
-            st.session_state.session_running = False
-            st.session_state.show_results_popup = True
-
-        # ── 2. Session controls ──
+        # ── Session controls ──
         ctrl_c1, ctrl_c2, ctrl_c3 = st.columns([2, 2, 3])
         with ctrl_c1:
             if not st.session_state.session_running:
@@ -214,7 +177,7 @@ def sync_dashboard():
                 </div>
                 """, unsafe_allow_html=True)
 
-        # ── 3. Fused state card ──
+        # ── Fused state card ──
         st.markdown("### 🧠 Fused Emotional State")
         if f_res and st.session_state.session_running:
             dom_emotion = f_res.get("dominant_emotion", "neutral")
@@ -256,7 +219,7 @@ def sync_dashboard():
             </div>
             """, unsafe_allow_html=True)
 
-        # ── 4. Modality badges ──
+        # ── Modality badges ──
         st.markdown("### 📡 Modality Signals")
         badge_c1, badge_c2, badge_c3 = st.columns(3)
         
@@ -289,24 +252,26 @@ def sync_dashboard():
         _render_badge(badge_c2, "🎤", "VOICE", a_res, "calibrating")
         _render_badge(badge_c3, "💬", "TEXT",  t_res, "listening")
 
-    with col_right:
+    sync_left()
+
+with col_right:
+    @st.fragment(run_every=0.5)
+    def sync_right():
+        data    = pipeline.get_latest()
+        v_res   = data.get("vision",  {})
+        a_res   = data.get("audio",   {})
+        t_res   = data.get("text",    {})
+        f_res   = data.get("fusion",  {})
+
         st.markdown("### 🕸 Emotion Radar")
         
-        now_ts = time.time()
-        last_chart_ts = st.session_state.get("_last_chart_ts", 0.0)
-        should_update_charts = (now_ts - last_chart_ts) >= 0.15
-
         if st.session_state.session_running and v_res and a_res and t_res:
             render_radar_chart({
                 "FACE":  v_res.get("probabilities", {}),
                 "VOICE": a_res.get("probabilities", {}),
                 "TEXT":  t_res.get("probabilities", {}),
             }, key="live_radar")
-            if should_update_charts:
-                st.session_state._last_chart_ts = now_ts
         else:
-            # Empty chart for idle
-            from config.emotions import UNIFIED_EMOTIONS
             uniform = {e: 1.0/len(UNIFIED_EMOTIONS) for e in UNIFIED_EMOTIONS}
             render_radar_chart({
                 "FACE": uniform, "VOICE": uniform, "TEXT": uniform
@@ -334,10 +299,40 @@ def sync_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-    # ── Timeline at full width ────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("### 📈 Session Timeline")
-    
+    sync_right()
+
+# ── Timeline ────────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown("### 📈 Session Timeline")
+
+@st.fragment(run_every=0.5)
+def sync_timeline():
+    data    = pipeline.get_latest()
+    f_res   = data.get("fusion",  {})
+    v_res   = data.get("vision",  {})
+    a_res   = data.get("audio",   {})
+    t_res   = data.get("text",    {})
+    elapsed = time.time() - (st.session_state.start_time or time.time())
+    mins = int(elapsed // 60)
+    secs = int(elapsed % 60)
+
+    if f_res and st.session_state.session_running:
+        tick = int(elapsed)
+        tl   = st.session_state.timeline_data
+        if not tl or tl[-1].get("tick") != tick:
+            entry = {
+                "tick":    tick,
+                "time":    f"{mins:02d}:{secs:02d}",
+                "face":    v_res.get("confidence", 0.0) if v_res else 0.0,
+                "voice":   a_res.get("confidence", 0.0) if a_res else 0.0,
+                "text":    t_res.get("confidence", 0.0) if t_res else 0.0,
+                "fusion":  f_res.get("confidence", 0.0),
+                "inc":     f_res.get("incongruence_score", 0.0),
+                "emotion": f_res.get("dominant_emotion", "neutral"),
+            }
+            tl.append(entry)
+            st.session_state.timeline_data = tl[-120:]
+
     tl = st.session_state.timeline_data
     if st.session_state.session_running and len(tl) >= 2:
         import plotly.graph_objects as go
@@ -389,7 +384,4 @@ def sync_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-
-# Run the auto-refreshing fragment
-sync_dashboard()
-
+sync_timeline()
