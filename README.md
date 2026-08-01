@@ -118,44 +118,93 @@ TriFusion is a comprehensive, production-style emotional intelligence system bui
 
 ---
 
-## 📦 Installation
+## 🚀 Getting Started
 
-### Prerequisites
-- Python 3.10+
-- Webcam and Microphone (for Live mode)
-- Internet connection (for model downloads)
+Follow these step-by-step instructions to get TriFusion running on your local machine.
 
-### Step-by-Step Setup
-1. **Clone Project**
-   ```bash
-   git clone https://github.com/Lalith0024/TriFusion-Trimodal-Emotional-Intelligence-System.git
-   cd TriFusion-Trimodal-Emotional-Intelligence-System
-   ```
-2. **Create Environment**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-3. **Install Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Step 1: Clone the Repository
+Open your terminal and clone the repository:
+```bash
+git clone https://github.com/Lalith0024/TriFusion-Trimodal-Emotional-Intelligence-System.git
+cd TriFusion-Trimodal-Emotional-Intelligence-System
+```
 
-### Verify Installation
-Run the built-in diagnostic tool to check hardware and environment:
+### Step 2: Set Up Python Environment
+TriFusion requires **Python 3.10+**. It is highly recommended to use a virtual environment to prevent dependency conflicts.
+```bash
+# Create a virtual environment named 'venv'
+python3 -m venv venv
+
+# Activate the virtual environment
+# On macOS/Linux:
+source venv/bin/activate
+# On Windows:
+# venv\Scripts\activate
+```
+
+### Step 3: Install Dependencies
+With your virtual environment activated, install all required packages:
+```bash
+pip install -r requirements.txt
+```
+
+### Step 4: Download Neural Models
+TriFusion relies on specific pre-trained weights for Vision, Audio, and Text processing. Run the automated download script to fetch them into the correct directories:
+```bash
+python3 scripts/download_models.py
+```
+> **Note:** This may take a few minutes depending on your internet connection.
+
+### Step 5: Configure Environment Variables
+TriFusion's WellnessAgent is powered by Groq's high-speed inference. You must provide an API key.
+1. Create a file named `.env` in the root directory.
+2. Add your Groq API key to the file:
+```env
+GROQ_API_KEY=your_api_key_here
+```
+*(You can get a free API key at [console.groq.com](https://console.groq.com))*
+
+---
+
+### Step 6: Launch the Application
+TriFusion operates with a decoupled architecture. You will need to start the Backend API and the Frontend Dashboard in **two separate terminal windows**.
+
+#### 🖥️ Terminal 1: Start the Backend API
+Keep your virtual environment activated in this terminal and start the FastAPI server:
+```bash
+# Ensure you are in the project root with the venv activated
+python3 src/api/main.py
+```
+*Wait until you see `Uvicorn running on http://0.0.0.0:8000` in the logs.*
+
+#### 🎨 Terminal 2: Start the Frontend Dashboard
+Open a **new** terminal window, navigate to the project folder, activate the virtual environment, and start Streamlit:
+```bash
+# Navigate to the project root
+cd /path/to/TriFusion-Trimodal-Emotional-Intelligence-System
+
+# Activate the virtual environment again
+# (On macOS/Linux)
+source venv/bin/activate
+
+# Launch the Streamlit dashboard
+streamlit run dashboard/app.py
+```
+
+### Step 7: Analyze!
+The dashboard should automatically open in your default web browser at `http://localhost:8501`. 
+1. Navigate to the **Live Dashboard** in the sidebar.
+2. Click **▶ Start Session** to initialize the trimodal capture pipeline.
+3. Observe the fused emotional analysis in real-time!
+
+---
+
+## 🛠️ Verifying Your Setup
+If you want to ensure your hardware (Webcam/Mic) is detected properly before launching the full app, you can run the diagnostic scripts:
 ```bash
 python3 tests/test_vision.py
 python3 tests/test_audio.py
 ```
-
----
-
-## 🚀 Quick Start
-1. **Activate Environment:** `source venv/bin/activate`
-2. **Set API Keys:** Create `.env` and add `GROQ_API_KEY=...`
-3. **Launch Backend:** `python3 src/api/main.py`
-4. **Launch Dashboard:** `streamlit run dashboard/app.py`
-5. **Analyze:** Open `http://localhost:8501` and start a session.
 
 ---
 
