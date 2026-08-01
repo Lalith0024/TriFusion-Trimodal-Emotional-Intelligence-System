@@ -26,12 +26,12 @@ FER2013_TO_UNIFIED = {
     1: "disgusted",  # Disgust
     2: "fearful",    # Fear
     3: "happy",      # Happy
-    4: "sad",        # Sad
-    5: "surprised",  # Surprise
-    6: "neutral",    # Neutral
+    4: "neutral",    # Neutral
+    5: "sad",        # Sad
+    6: "surprised",  # Surprise
     # NOTE: "calm" has near-zero prob from vision (not a FER2013 class)
 }
-FER2013_LABELS = ["angry", "disgusted", "fearful", "happy", "sad", "surprised", "neutral"]
+FER2013_LABELS = ["angry", "disgusted", "fearful", "happy", "neutral", "sad", "surprised"]
 FER2013_NUM_CLASSES = 7
 
 # ---------------------------------------------------------------------------

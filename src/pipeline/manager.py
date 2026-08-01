@@ -70,18 +70,50 @@ class PipelineManager:
         self.transcriber = Transcriber(model_size="tiny")
         logger.info("All models loaded.")
 
+        # WebRTC Audio Buffer (3 seconds at 16000 Hz)
+        self.SAMPLE_RATE = 16000
+        self.AUDIO_BUFFER_SIZE = self.SAMPLE_RATE * 3
+        self._audio_buffer = np.zeros(self.AUDIO_BUFFER_SIZE, dtype=np.float32)
+        self._audio_buffer_lock = threading.Lock()
+        
+    def feed_video_frame(self, frame: np.ndarray):
+        """Called by WebRTC video_frame_callback."""
+        if not self.running: return
+        self._put_latest(self._frame_q, frame.copy())
+        
+        # Calculate FPS
+        now = time.time()
+        if not hasattr(self, '_fps_tick'):
+            self._fps_tick = now
+            self._fps_count = 0
+            
+        self._fps_count += 1
+        if now - self._fps_tick >= 1.0:
+            with self._fps_lock:
+                self._fps = round(self._fps_count / (now - self._fps_tick), 1)
+                self._frame_count += self._fps_count
+            self._fps_count = 0
+            self._fps_tick = now
+
+    def feed_audio_chunk(self, waveform: np.ndarray):
+        """Called by WebRTC audio_frame_callback. waveform should be (N,)."""
+        if not self.running: return
+        chunk_len = len(waveform)
+        with self._audio_buffer_lock:
+            if chunk_len >= self.AUDIO_BUFFER_SIZE:
+                self._audio_buffer[:] = waveform[-self.AUDIO_BUFFER_SIZE:]
+            else:
+                self._audio_buffer[:-chunk_len] = self._audio_buffer[chunk_len:]
+                self._audio_buffer[-chunk_len:] = waveform
+
     def start(self):
         if self.running: return
         self.running = True
-        
-        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True, name="trifusion-capture")
-        self._capture_thread.start()
         
         if SIMULATION_MODE:
             self._fusion_thread = threading.Thread(target=self._simulate_loop, daemon=True, name="trifusion-sim")
             self._fusion_thread.start()
         else:
-            self._audio_recorder.start()
             self._vision_thread = threading.Thread(target=self._vision_loop, daemon=True, name="trifusion-vision")
             self._audio_thread = threading.Thread(target=self._audio_loop, daemon=True, name="trifusion-audio")
             self._text_thread = threading.Thread(target=self._text_loop, daemon=True, name="trifusion-text")
@@ -101,9 +133,7 @@ class PipelineManager:
         self._put_latest(self._frame_q, None)
         self._put_latest(self._agent_q, None)
         
-        if self._capture_thread: self._capture_thread.join(timeout=2)
         if not SIMULATION_MODE:
-            if hasattr(self, '_audio_recorder'): self._audio_recorder.stop()
             if self._vision_thread: self._vision_thread.join(timeout=2)
             if self._audio_thread: self._audio_thread.join(timeout=2)
             if self._text_thread: self._text_thread.join(timeout=2)
@@ -114,76 +144,6 @@ class PipelineManager:
 
         with self._display_lock:
             self._display_frame = None
-
-    def _capture_loop(self):
-        import platform
-        if platform.system() == "Darwin":
-            cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
-        else:
-            cap = cv2.VideoCapture(0)
-
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(0)
-
-        if not cap.isOpened():
-            logger.warning("No camera found — using blank placeholder frame.")
-            while self.running:
-                blank = np.zeros((480, 640, 3), dtype=np.uint8)
-                msg = "No camera detected"
-                if SIMULATION_MODE:
-                    msg = "Demo Mode" if not _missing_cps else "Demo Mode (Missing Checkpoints)"
-                cv2.putText(blank, msg, (160, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 120), 2)
-                if _missing_cps and SIMULATION_MODE:
-                    cv2.putText(blank, "Run train scripts & restart.", (120, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (60, 60, 100), 1)
-                
-                rgb = cv2.cvtColor(blank, cv2.COLOR_BGR2RGB)
-                with self._display_lock:
-                    self._display_frame = rgb
-                self._put_latest(self._frame_q, blank)
-                time.sleep(0.1)
-                
-                if SIMULATION_MODE:
-                    self._fps_lock.acquire()
-                    self._frame_count += 1
-                    self._fps = 30.0
-                    self._fps_lock.release()
-            return
-
-        # Camera successfully opened
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-
-        fps_tick = time.time()
-        fps_count = 0
-
-        try:
-            while self.running:
-                ret, frame = cap.read()
-                if not ret or frame is None or frame.size == 0:
-                    time.sleep(0.01)
-                    continue
-
-                frame = cv2.flip(frame, 1)
-                self._put_latest(self._frame_q, frame.copy())
-
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                rgb = np.ascontiguousarray(rgb)
-                with self._display_lock:
-                    self._display_frame = rgb
-
-                fps_count += 1
-                now = time.time()
-                if now - fps_tick >= 1.0:
-                    with self._fps_lock:
-                        self._fps = round(fps_count / (now - fps_tick), 1)
-                        self._frame_count += fps_count
-                    fps_count = 0
-                    fps_tick = now
-        finally:
-            cap.release()
 
     def _vision_loop(self):
         while self.running:
@@ -202,13 +162,13 @@ class PipelineManager:
     def _audio_loop(self):
         while self.running:
             try:
-                if self._audio_recorder.is_active:
-                    waveform = self._audio_recorder.get_chunk()
-                    if waveform.sum() != 0:
-                        a_res = self.audio_inf.predict(waveform)
-                        with self._result_lock:
-                            self._latest_audio = a_res
-                            self._result["audio"] = a_res
+                with self._audio_buffer_lock:
+                    waveform = self._audio_buffer.copy()
+                if waveform.sum() != 0:
+                    a_res = self.audio_inf.predict(waveform)
+                    with self._result_lock:
+                        self._latest_audio = a_res
+                        self._result["audio"] = a_res
                 time.sleep(0.5)
             except Exception as e:
                 logger.error(f"Audio error: {e}")
@@ -216,16 +176,16 @@ class PipelineManager:
     def _text_loop(self):
         while self.running:
             try:
-                if self._audio_recorder.is_active:
-                    waveform = self._audio_recorder.get_chunk()
-                    if waveform.sum() != 0:
-                        transcribed = self.transcriber.transcribe(waveform)
-                        if transcribed and transcribed.strip():
-                            self._last_transcribed = transcribed
-                            t_res = self.text_inf.predict(transcribed)
-                            with self._result_lock:
-                                self._latest_text = t_res
-                                self._result["text"] = t_res
+                with self._audio_buffer_lock:
+                    waveform = self._audio_buffer.copy()
+                if waveform.sum() != 0:
+                    transcribed = self.transcriber.transcribe(waveform)
+                    if transcribed and transcribed.strip():
+                        self._last_transcribed = transcribed
+                        t_res = self.text_inf.predict(transcribed)
+                        with self._result_lock:
+                            self._latest_text = t_res
+                            self._result["text"] = t_res
                 time.sleep(1.0)
             except Exception as e:
                 logger.error(f"Text error: {e}")

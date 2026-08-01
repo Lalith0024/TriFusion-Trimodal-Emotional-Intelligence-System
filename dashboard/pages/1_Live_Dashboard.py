@@ -31,6 +31,9 @@ from dashboard.components.incongruence_meter import render_incongruence_meter
 from dashboard.components.sidebar          import render_sidebar
 from src.pipeline.manager                  import PipelineManager
 from config.emotions                       import UNIFIED_EMOTIONS
+from streamlit_webrtc                      import webrtc_streamer, WebRtcMode, RTCConfiguration
+import av
+import numpy as np
 
 load_dotenv()
 
@@ -51,13 +54,17 @@ def _color(emotion: str) -> str:
 
 
 # ── Singleton pipeline — one per Streamlit session ───────────────────────────
-if "pipeline" not in st.session_state:
-    with st.spinner("🧠 Loading Trimodal Neural Networks (Vision, Audio, Text)... this takes ~30 seconds on first load."):
-        st.session_state.pipeline        = PipelineManager()
-        st.session_state.session_running = False
-        st.session_state.start_time      = None
-        st.session_state.last_agent_resp = "Ready to analyze. Click ▶ Start Session."
-        st.session_state.timeline_data   = []     # list of dicts for timeline chart
+@st.cache_resource
+def get_pipeline():
+    return PipelineManager()
+
+pipeline = get_pipeline()
+
+if "session_running" not in st.session_state:
+    st.session_state.session_running = False
+    st.session_state.start_time      = None
+    st.session_state.last_agent_resp = "Ready to analyze. Click ▶ Start Session."
+    st.session_state.timeline_data   = []     # list of dicts for timeline chart
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -84,8 +91,7 @@ if _is_simulation:
 @st.fragment(run_every=0.033)
 def sync_dashboard():
     """Reads latest data from the background pipeline and renders the entire live dashboard UI."""
-    data    = st.session_state.pipeline.get_latest()
-    frame   = data.get("frame")
+    data    = pipeline.get_latest()
     v_res   = data.get("vision",  {})
     a_res   = data.get("audio",   {})
     t_res   = data.get("text",    {})
@@ -120,33 +126,53 @@ def sync_dashboard():
     with col_left:
         # ── 1. Camera feed ──
         st.markdown("### 📷 Live Feed")
-        if frame is not None and st.session_state.session_running:
-            import cv2
-            import base64
-            bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            _, buffer = cv2.imencode('.jpg', bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            b64_str = base64.b64encode(buffer).decode('utf-8')
-            st.markdown(
-                f'<img src="data:image/jpeg;base64,{b64_str}" style="width:100%; border-radius:8px; border:1px solid #2a2a3a;">',
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown("""
-            <div style="background: linear-gradient(135deg, #0a0a0f 0%, #13131a 100%);
-                        border: 2px dashed #2a2a3a; border-radius: 16px;
-                        height: 400px; display: flex; align-items: center;
-                        justify-content: center; flex-direction: column; gap: 16px;
-                        position: relative; overflow: hidden;">
-                <div style="position:absolute; inset:0; background: radial-gradient(ellipse at 50% 50%, rgba(99,102,241,0.05) 0%, transparent 70%);"></div>
-                <div style="font-size: 4rem; opacity: 0.2; filter: grayscale(1);">📷</div>
-                <div style="color: #64748b; font-size: 0.9rem; text-align: center; line-height: 1.8; z-index: 1;">
-                    Camera feed will appear here.<br>
-                    <span style="color: #6366f1; font-size: 0.82rem; font-weight: 500;">
-                        Click ▶ Start Session to begin analysis.
-                    </span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        
+        # WebRTC callbacks
+        def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
+            img = frame.to_ndarray(format="bgr24")
+            img = cv2.flip(img, 1)
+            pipeline.feed_video_frame(img)
+            
+            # Draw annotations
+            v = pipeline.get_latest().get("vision", {})
+            if v and v.get("face_detected") and v.get("bbox") and hasattr(pipeline, 'vision_inf'):
+                img = pipeline.vision_inf.face_detector.draw_overlay(
+                    img, v["bbox"], v["dominant"], v["confidence"]
+                )
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+        def audio_frame_callback(frame: av.AudioFrame) -> av.AudioFrame:
+            array = frame.to_ndarray()
+            if array.shape[0] > 1: array = array.mean(axis=0)
+            else: array = array[0]
+            pipeline.feed_audio_chunk(array)
+            return frame
+
+        # STUN configuration for cloud
+        RTC_CONFIGURATION = RTCConfiguration(
+            {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+        )
+
+        ctx = webrtc_streamer(
+            key="trifusion-webrtc",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIGURATION,
+            video_frame_callback=video_frame_callback,
+            audio_frame_callback=audio_frame_callback,
+            async_processing=True,
+            media_stream_constraints={"video": True, "audio": True},
+        )
+        
+        # Sync pipeline state with WebRTC state
+        if ctx.state.playing and not pipeline.running:
+            pipeline.start()
+            st.session_state.session_running = True
+            st.session_state.start_time = time.time()
+            st.session_state.timeline_data = []
+        elif not ctx.state.playing and pipeline.running:
+            pipeline.stop()
+            st.session_state.session_running = False
+            st.session_state.show_results_popup = True
 
         # ── 2. Session controls ──
         ctrl_c1, ctrl_c2, ctrl_c3 = st.columns([2, 2, 3])
@@ -162,18 +188,11 @@ def sync_dashboard():
                         st.session_state.show_results_popup = False
                         st.rerun()
                 else:
-                    if st.button("▶ Start Session", type="primary", width="stretch", key="btn_start"):
-                        st.session_state.pipeline.start()
-                        st.session_state.session_running = True
-                        st.session_state.start_time      = time.time()
-                        st.session_state.timeline_data   = []
-                        st.rerun()
-            else:
-                if st.button("⏹ Stop Session", width="stretch", key="btn_stop"):
-                    st.session_state.pipeline.stop()
-                    st.session_state.session_running = False
-                    st.session_state.show_results_popup = True
-                    st.rerun()
+                    st.markdown("""
+                    <div style="color: #6366f1; font-size: 0.85rem; font-weight: 500; margin-top: 10px;">
+                        Click START above to begin
+                    </div>
+                    """, unsafe_allow_html=True)
                     
         with ctrl_c2:
             if st.session_state.session_running:

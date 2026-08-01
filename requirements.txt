@@ -34,3 +34,5 @@ kagglehub>=0.2.5
 huggingface_hub>=0.23.0
 pytest>=8.2.0
 pytest-asyncio>=0.23.6
+streamlit-webrtc>=0.47.0
+av>=11.0.0
