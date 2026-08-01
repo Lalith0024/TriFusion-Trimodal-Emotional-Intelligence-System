@@ -70,6 +70,12 @@ div[data-testid="stSidebar"] {
 }
 div[data-testid="stSidebar"] * { color: var(--text) !important; }
 
+/* Hide default streamlit navigation */
+[data-testid="stSidebarNav"] {
+    display: none !important;
+}
+
+
 /* ── Typography helpers ────────────────────────────────────── */
 .main-header {
     font-family: 'Space Mono', monospace;

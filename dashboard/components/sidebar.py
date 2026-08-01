@@ -17,10 +17,17 @@ _MODEL_PATHS = {
 }
 
 
-def _model_status(path: str) -> tuple[str, str]:
+def _model_status(name: str, path: str) -> tuple[str, str]:
     """Return (icon, label) for the model at `path`."""
     exists = os.path.exists(path)
-    return ("✓", "Ready") if exists else ("○", "Not trained")
+    if exists:
+        return ("✓", "Ready")
+    
+    # Audio and Text have HuggingFace community fallbacks, so they are always ready
+    if "Audio" in name or "Text" in name:
+        return ("✓", "Ready (Community Fallback)")
+        
+    return ("○", "Not trained")
 
 
 def render_sidebar():
@@ -68,7 +75,7 @@ def render_sidebar():
 
         all_ready = True
         for name, path in _MODEL_PATHS.items():
-            icon, label = _model_status(path)
+            icon, label = _model_status(name, path)
             color        = "#22c55e" if icon == "✓" else "#64748b"
             if icon != "✓":
                 all_ready = False
