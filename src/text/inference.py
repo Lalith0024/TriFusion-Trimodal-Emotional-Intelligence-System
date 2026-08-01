@@ -15,7 +15,7 @@ can concat them with vision and audio tensors without any re-indexing.
 
 import os
 import torch
-from transformers import RobertaTokenizerFast, RobertaForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from config.emotions import UNIFIED_EMOTIONS
 import logging
 
@@ -53,16 +53,16 @@ class TextInference:
         logger.info(f"Loading text model from: {model_src}")
 
         try:
-            self.tokenizer = RobertaTokenizerFast.from_pretrained(model_src)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_src)
         except Exception as e:
             logger.warning(f"Failed to load text tokenizer from {model_src} ({e}). Falling back to {fallback_model}.")
-            self.tokenizer = RobertaTokenizerFast.from_pretrained(fallback_model)
+            self.tokenizer = AutoTokenizer.from_pretrained(fallback_model)
 
         try:
-            self.model = RobertaForSequenceClassification.from_pretrained(model_src).to(self.device)
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_src).to(self.device)
         except Exception as e:
             logger.warning(f"Failed to load text model from {model_src} ({e}). Falling back to {fallback_model}.")
-            self.model = RobertaForSequenceClassification.from_pretrained(fallback_model).to(self.device)
+            self.model = AutoModelForSequenceClassification.from_pretrained(fallback_model).to(self.device)
 
         self.model.eval()
 
@@ -101,21 +101,28 @@ class TextInference:
 
         with torch.inference_mode():
             logits = self.model(**inputs).logits
-            probs  = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
-
+            
         # Initialize base probabilities
         probabilities = {e: 0.0 for e in UNIFIED_EMOTIONS}
         num_labels = len(self.model.config.id2label)
 
         if num_labels == len(UNIFIED_EMOTIONS):
-            # Custom 8-class model (trained locally)
+            # Custom 8-class model (trained locally, uses softmax)
+            probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
             for i, e in enumerate(UNIFIED_EMOTIONS):
                 probabilities[e] = float(probs[i] if probs.ndim > 0 else probs)
         else:
-            # Community 28-class model (e.g. SamLowe/roberta-base-go_emotions)
+            # Community 28-class model (e.g. SamLowe) uses sigmoid for multi-label
+            probs = torch.sigmoid(logits).squeeze().cpu().numpy()
+            
+            import numpy as np
+            if np.sum(probs) > 0:
+                probs = probs / np.sum(probs) # Normalize to create a valid distribution
+                
             from config.emotions import GOEMOTIONS_TO_UNIFIED
             for i in range(num_labels):
-                label = self.model.config.id2label[i].lower()
+                label_name = self.model.config.id2label.get(i, self.model.config.id2label.get(str(i), ""))
+                label = str(label_name).lower()
                 unified = GOEMOTIONS_TO_UNIFIED.get(label, "neutral")
                 probabilities[unified] += float(probs[i] if probs.ndim > 0 else probs)
 
