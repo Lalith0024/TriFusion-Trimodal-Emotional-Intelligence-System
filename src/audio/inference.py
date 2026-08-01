@@ -19,7 +19,7 @@ Graceful degradation:
 import os
 import torch
 import numpy as np
-from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
+from transformers import AutoFeatureExtractor, Wav2Vec2ForSequenceClassification
 from config.emotions import RAVDESS_LABELS, UNIFIED_EMOTIONS
 import logging
 
@@ -70,10 +70,10 @@ class AudioInference:
 
         # Load processor (auto-populating target_path if local directory was missing files)
         try:
-            self.processor = Wav2Vec2Processor.from_pretrained(model_src)
+            self.processor = AutoFeatureExtractor.from_pretrained(model_src)
         except Exception as e:
             logger.warning(f"Failed to load processor from {model_src} ({e}). Falling back to {fallback_model}.")
-            self.processor = Wav2Vec2Processor.from_pretrained(fallback_model)
+            self.processor = AutoFeatureExtractor.from_pretrained(fallback_model)
             if target_path and os.path.isdir(target_path):
                 try:
                     self.processor.save_pretrained(target_path)
