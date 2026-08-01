@@ -36,7 +36,7 @@ class TextInference:
         else:
             self.device = torch.device("cpu")
 
-        fallback_model = "roberta-base"
+        fallback_model = "SamLowe/roberta-base-go_emotions"
 
         is_valid_local = (
             model_path
@@ -59,18 +59,10 @@ class TextInference:
             self.tokenizer = RobertaTokenizerFast.from_pretrained(fallback_model)
 
         try:
-            self.model = RobertaForSequenceClassification.from_pretrained(
-                model_src,
-                num_labels=len(UNIFIED_EMOTIONS),
-                ignore_mismatched_sizes=True
-            ).to(self.device)
+            self.model = RobertaForSequenceClassification.from_pretrained(model_src).to(self.device)
         except Exception as e:
             logger.warning(f"Failed to load text model from {model_src} ({e}). Falling back to {fallback_model}.")
-            self.model = RobertaForSequenceClassification.from_pretrained(
-                fallback_model,
-                num_labels=len(UNIFIED_EMOTIONS),
-                ignore_mismatched_sizes=True
-            ).to(self.device)
+            self.model = RobertaForSequenceClassification.from_pretrained(fallback_model).to(self.device)
 
         self.model.eval()
 
@@ -111,9 +103,23 @@ class TextInference:
             logits = self.model(**inputs).logits
             probs  = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
 
-        # Map index → emotion label in UNIFIED_EMOTIONS order
-        probabilities = {e: float(probs[i]) for i, e in enumerate(UNIFIED_EMOTIONS)}
-        dominant      = max(probabilities, key=probabilities.get)
+        # Initialize base probabilities
+        probabilities = {e: 0.0 for e in UNIFIED_EMOTIONS}
+        num_labels = len(self.model.config.id2label)
+
+        if num_labels == len(UNIFIED_EMOTIONS):
+            # Custom 8-class model (trained locally)
+            for i, e in enumerate(UNIFIED_EMOTIONS):
+                probabilities[e] = float(probs[i] if probs.ndim > 0 else probs)
+        else:
+            # Community 28-class model (e.g. SamLowe/roberta-base-go_emotions)
+            from config.emotions import GOEMOTIONS_TO_UNIFIED
+            for i in range(num_labels):
+                label = self.model.config.id2label[i].lower()
+                unified = GOEMOTIONS_TO_UNIFIED.get(label, "neutral")
+                probabilities[unified] += float(probs[i] if probs.ndim > 0 else probs)
+
+        dominant = max(probabilities, key=probabilities.get)
 
         return {
             "probabilities": probabilities,

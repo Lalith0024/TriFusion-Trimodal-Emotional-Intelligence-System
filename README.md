@@ -289,6 +289,9 @@ TriFusion/
 ## 🎓 Advanced Usage
 For researchers, the `FusionMLP` training weights can be extracted from `models/fusion/` to analyze modality-weight bias.
 
+**Architecture Decisions:**  
+If you are interested in the engineering rationale behind our dynamic modality mapping in production (mapping 28-class RoBERTa down to 8-class fusion space to avoid semantic loss), please read the [Architecture Decisions](file:///Users/kasulalalithendra/Desktop/Trifusion/ARCHITECTURE_DECISIONS.md) document.
+
 ## 🔮 Future Enhancements
 - [ ] Real-time region-of-interest (ROI) tracking for micro-expressions.
 - [ ] Support for multiple simultaneous subjects.

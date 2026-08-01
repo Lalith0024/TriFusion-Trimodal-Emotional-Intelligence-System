@@ -39,7 +39,7 @@ class AudioInference:
             self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
-        fallback_model = "facebook/wav2vec2-base"
+        fallback_model = "ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition"
 
         # Resolve relative model_path to absolute path relative to project root
         target_path = model_path
@@ -83,18 +83,10 @@ class AudioInference:
 
         # Load model (auto-populating target_path if local directory was missing files)
         try:
-            self.model = Wav2Vec2ForSequenceClassification.from_pretrained(
-                model_src,
-                num_labels=len(RAVDESS_LABELS),
-                ignore_mismatched_sizes=True
-            ).to(self.device)
+            self.model = Wav2Vec2ForSequenceClassification.from_pretrained(model_src).to(self.device)
         except Exception as e:
             logger.warning(f"Failed to load model from {model_src} ({e}). Falling back to {fallback_model}.")
-            self.model = Wav2Vec2ForSequenceClassification.from_pretrained(
-                fallback_model,
-                num_labels=len(RAVDESS_LABELS),
-                ignore_mismatched_sizes=True
-            ).to(self.device)
+            self.model = Wav2Vec2ForSequenceClassification.from_pretrained(fallback_model).to(self.device)
 
         self.model.eval()
 
@@ -127,9 +119,32 @@ class AudioInference:
             logits = self.model(**inputs).logits
             probs  = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
 
-        # Build probability dict in RAVDESS label order
-        probabilities = {label: float(probs[i]) for i, label in enumerate(RAVDESS_LABELS)}
-        dominant      = max(probabilities, key=probabilities.get)
+        # Initialize base probabilities
+        probabilities = {label: 0.0 for label in RAVDESS_LABELS}
+        num_labels = len(self.model.config.id2label)
+
+        # Check if it's the locally trained model by inspecting the label map order
+        is_local_model = (
+            num_labels == len(RAVDESS_LABELS) 
+            and 0 in self.model.config.id2label 
+            and str(self.model.config.id2label[0]).lower() == RAVDESS_LABELS[0].lower()
+        )
+
+        if is_local_model:
+            # Custom 8-class RAVDESS model (trained locally)
+            for i, label in enumerate(RAVDESS_LABELS):
+                probabilities[label] = float(probs[i] if probs.ndim > 0 else probs)
+        else:
+            # Community model (e.g. ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition)
+            for i in range(num_labels):
+                label_str = str(self.model.config.id2label.get(i, "")).lower()
+                # Map to our standard RAVDESS/Unified string
+                if label_str in RAVDESS_LABELS:
+                    probabilities[label_str] += float(probs[i] if probs.ndim > 0 else probs)
+                else:
+                    probabilities["neutral"] += float(probs[i] if probs.ndim > 0 else probs)
+
+        dominant = max(probabilities, key=probabilities.get)
 
         return {
             "probabilities": probabilities,
