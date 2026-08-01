@@ -205,6 +205,7 @@ If you want to ensure your environment is configured correctly before launching 
 # Ensure you are in the project root with the venv activated
 pytest tests/test_vision.py
 pytest tests/test_audio.py
+pytest tests/test_text.py
 ```
 
 ---
