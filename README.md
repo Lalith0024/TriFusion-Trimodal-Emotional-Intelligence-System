@@ -200,10 +200,11 @@ The dashboard should automatically open in your default web browser at `http://l
 ---
 
 ## 🛠️ Verifying Your Setup
-If you want to ensure your hardware (Webcam/Mic) is detected properly before launching the full app, you can run the diagnostic scripts:
+If you want to ensure your environment is configured correctly before launching the full app, you can run the diagnostic unit tests using `pytest`:
 ```bash
-python3 tests/test_vision.py
-python3 tests/test_audio.py
+# Ensure you are in the project root with the venv activated
+pytest tests/test_vision.py
+pytest tests/test_audio.py
 ```
 
 ---
