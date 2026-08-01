@@ -14,10 +14,8 @@ data/raw/
 data/processed/
 
 # Model weights — never commit trained weights to git
-models/vision/*.pth
 models/audio/wav2vec2_ravdess/
 models/text/roberta_goemotions/
-models/fusion/*.pth
 
 # Keep .gitkeep files so folder structure is preserved
 !models/vision/.gitkeep

@@ -10,14 +10,12 @@ from src.pipeline.startup_validator import validate_checkpoints
 
 logger = logging.getLogger(__name__)
 
-IS_CLOUD = "STREAMLIT_SERVER_PORT" in os.environ or os.path.exists("/home/appuser")
-
-_sim_mode_env = os.environ.get("SIMULATION_MODE", str(IS_CLOUD)).lower() in ("true", "1", "t")
+_sim_mode_env = os.environ.get("SIMULATION_MODE", "false").lower() in ("true", "1", "t")
 
 _checkpoints_ok, _missing_cps = validate_checkpoints()
 if not _checkpoints_ok and not _sim_mode_env:
-    logger.warning("Checkpoints missing. Forcing SIMULATION_MODE=True.")
-    SIMULATION_MODE = True
+    logger.warning(f"Checkpoints missing: {_missing_cps}. Running in live mode anyway; models may random-init if missing.")
+    SIMULATION_MODE = False
 else:
     SIMULATION_MODE = _sim_mode_env
 
